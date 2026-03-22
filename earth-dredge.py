@@ -74,16 +74,14 @@ if 'raw_df' not in st.session_state: st.session_state['raw_df'] = None
 if 'master_df' not in st.session_state: st.session_state['master_df'] = None
 if 'proj_info' not in st.session_state: st.session_state['proj_info'] = {'area_m2': 0.0, 'center': [43.325, 5.340], 'res': 10.0}
 if 'geoms' not in st.session_state: st.session_state['geoms'] = {'poly': None} 
-if 'master_geoms' not in st.session_state: st.session_state['master_geoms'] = {'poly': None}
 if 'map_center' not in st.session_state: st.session_state['map_center'] = [43.325, 5.340] 
-if 'rect_data' not in st.session_state: st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
 if 'meteo' not in st.session_state: st.session_state['meteo'] = None
 
-# Valeurs de sécurité par défaut
-vol_cut_terre = vol_cut_mer = vol_fill_terre = vol_fill_sousmer = vol_fill_surmer = 0.0
-tot_cut = tot_fill = 0.0
-current_lost_area = 0.0
-bounds_stats = []
+# Gestionnaire d'outils de dessin dédiés
+if 'marine_shapes' not in st.session_state:
+    st.session_state['marine_shapes'] = {'terre_plein': None, 'bassin': None, 'quai': None, 'digue': None, 'evitage': None}
+if 'design_map_key' not in st.session_state:
+    st.session_state['design_map_key'] = 0 # Utilisé pour purger l'outil de dessin proprement
 
 # --- UI : BARRE LATERALE ---
 st.sidebar.header("Localisation") 
@@ -167,12 +165,13 @@ col1, col2 = st.columns([2, 1])
 with col1: 
     st.subheader("1. Zone Globale du Projet") 
     st.caption("Tracez le grand polygone englobant l'étude (Terre + Mer).")
-    input_map_data = st_folium(m_input, width="100%", height=500, key="input_map") 
+    # returned_objects limite les rechargements au seul moment où on trace
+    input_map_data = st_folium(m_input, width="100%", height=500, key="input_map", returned_objects=["all_drawings"]) 
 
 with col2: 
     st.subheader("2. Extraction Data") 
     if st.button("1️⃣ TÉLÉCHARGER LE MNT", width="stretch", type="primary"): 
-        if input_map_data["all_drawings"]: 
+        if input_map_data and input_map_data.get("all_drawings"): 
             poly_coords = [d["geometry"]["coordinates"][0] for d in input_map_data["all_drawings"] if d["geometry"]["type"] == "Polygon"][-1]
             with st.spinner("Sondage en cours..."): 
                 poly = Polygon(poly_coords) 
@@ -234,7 +233,7 @@ with col2:
                         st.rerun()
 
     if st.button("2️⃣ ACTUALISER LE FILTRE (Local)", width="stretch"):
-        if st.session_state['master_df'] is not None and input_map_data["all_drawings"]:
+        if st.session_state['master_df'] is not None and input_map_data and input_map_data.get("all_drawings"):
             new_poly = Polygon([d["geometry"]["coordinates"][0] for d in input_map_data["all_drawings"] if d["geometry"]["type"] == "Polygon"][-1])
             df_m = st.session_state['master_df'].copy()
             df_m['In_Project'] = df_m.apply(lambda r: new_poly.contains(Point(r['Lon'], r['Lat'])), axis=1)
@@ -245,7 +244,7 @@ with col2:
 
     if st.button("🗑️ PURGER TOUT", width="stretch"):
         st.session_state['raw_df'] = st.session_state['master_df'] = None
-        st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
+        st.session_state['marine_shapes'] = {'terre_plein': None, 'bassin': None, 'quai': None, 'digue': None, 'evitage': None}
         st.rerun()
 
 # =========================================================================
@@ -262,49 +261,6 @@ if st.session_state['raw_df'] is not None:
     def to_m(lon, lat): return (lon-c_lon)*111000*math.cos(math.radians(c_lat)), (lat-c_lat)*111000 
     def m_to_latlon(x, y): return y / 111000 + c_lat, x / (111000 * math.cos(math.radians(c_lat))) + c_lon 
     df['X'], df['Y'] = zip(*[to_m(ln, lt) for lt, ln in zip(df['Lat'], df['Lon'])]) 
-
-    # --- CARTE INTERACTIVE 3D ---
-    st.markdown("---")
-    st.subheader("3. Modélisation 3D Interactive")
-    st.info("🖌️ **Règles de Dessin :**\n"
-            "- **Polygone 1 :** Terre-Plein (ou utilisez le bouton IA de la barre latérale).\n"
-            "- **Polygone 2 :** Bassin de Dragage (Z négatif).\n"
-            "- **Ligne 1 :** Digue Anti-Houle.\n"
-            "- **Ligne 2 :** Mur de Quai vertical.\n"
-            "- **Cercle :** Zone d'Évitage.")
-    
-    m_design = folium.Map(location=[c_lat, c_lon], zoom_start=16, tiles='OpenStreetMap')
-    folium.Polygon(locations=[(p[1], p[0]) for p in st.session_state['geoms']['poly']], color='black', weight=2, fill=False).add_to(m_design)
-    Draw(export=False, draw_options={'polyline':True, 'polygon':True, 'circle':True, 'rectangle':False, 'marker':False}).add_to(m_design)
-    
-    df_samp = df[df['In_Project']].sample(min(2000, len(df[df['In_Project']])))
-    cmap = cm.LinearColormap(['blue', 'cyan', 'green', 'yellow', 'red'], vmin=df['Z_Ext'].min(), vmax=df['Z_Ext'].max())
-    for _, r in df_samp.iterrows(): folium.CircleMarker([r['Lat'], r['Lon']], radius=2, color=cmap(r['Z_Ext']), fill=True).add_to(m_design)
-    
-    design_map_data = st_folium(m_design, width="100%", height=500, key="design_map")
-
-    # --- EXTRACTION DES DESSINS ---
-    d_polys, d_lines, d_circles = [], [], []
-    if design_map_data and design_map_data.get("all_drawings"):
-        for d in design_map_data["all_drawings"]:
-            g_type = d["geometry"]["type"]
-            if g_type == "Polygon": d_polys.append(d["geometry"]["coordinates"][0])
-            elif g_type == "LineString": d_lines.append(d["geometry"]["coordinates"])
-            elif g_type == "Point" and d.get("properties", {}).get("radius"): d_circles.append((d["geometry"]["coordinates"], d["properties"]["radius"]))
-
-    term_coords_ll = None
-    bassin_coords = None
-    
-    if st.session_state.get('rect_data', {}).get('coords'):
-        term_coords_ll = st.session_state['rect_data']['coords'][0]
-        if len(d_polys) > 0: bassin_coords = d_polys[0]
-    else:
-        if len(d_polys) > 0: term_coords_ll = d_polys[0]
-        if len(d_polys) > 1: bassin_coords = d_polys[1]
-
-    digue_coords = d_lines[0] if len(d_lines) > 0 else None
-    quai_coords = d_lines[1] if len(d_lines) > 1 else None
-    evitage_circle = d_circles[-1] if d_circles else None
 
     # --- IA FONCIER (MEGA-BLOCK) ---
     poly_coords_m = [to_m(lon, lat) for lon, lat in st.session_state['geoms']['poly']] 
@@ -348,30 +304,103 @@ if st.session_state['raw_df'] is not None:
                                                     para = affinity.skew(c_box, xs=shear, origin=centroid)
                                                     best_shape = affinity.rotate(para, angle, origin=centroid, use_radians=False)
                 if best_shape:
-                    st.session_state['rect_data'] = {'coords': [[m_to_latlon(x, y) for x, y in best_shape.exterior.coords]], 'area': best_area, 'type': forme_opt}
+                    new_coords = [[m_to_latlon(x, y) for x, y in best_shape.exterior.coords]]
+                    # Assigner directement à la forme Terre-Plein
+                    st.session_state['marine_shapes']['terre_plein'] = new_coords[0]
+                    st.session_state['design_map_key'] += 1
                     st.rerun()
 
-    best_shape_ll = st.session_state['rect_data']['coords']
-    operational_area_m2 = st.session_state['rect_data']['area']
-    current_shape_type = st.session_state['rect_data'].get('type', 'Forme Optimisée')
+    # --- UI : CARTE INTERACTIVE 3D ---
+    st.markdown("---")
+    st.subheader("3. Modélisation 3D Interactive")
     
+    # Boutons Radio pour choisir l'outil actif
+    draw_mode = st.radio("Sélecteur d'Outil de Dessin :", 
+        ["🟩 Terre-Plein (Polygone)", "🟦 Bassin Dragage (Polygone)", "⚫ Mur de Quai (Ligne)", "🟥 Digue Anti-Houle (Ligne)", "🔵 Cercle d'Évitage (Cercle)", "🔍 Navigation Seule (Pas de dessin)"], 
+        horizontal=True)
+    
+    # Boutons de suppression rapides
+    c_del1, c_del2, c_del3, c_del4, c_del5 = st.columns(5)
+    if c_del1.button("🗑️ Effacer Terre-Plein", width="stretch"): st.session_state['marine_shapes']['terre_plein'] = None; st.session_state['design_map_key'] += 1; st.rerun()
+    if c_del2.button("🗑️ Effacer Bassin", width="stretch"): st.session_state['marine_shapes']['bassin'] = None; st.session_state['design_map_key'] += 1; st.rerun()
+    if c_del3.button("🗑️ Effacer Quai", width="stretch"): st.session_state['marine_shapes']['quai'] = None; st.session_state['design_map_key'] += 1; st.rerun()
+    if c_del4.button("🗑️ Effacer Digue", width="stretch"): st.session_state['marine_shapes']['digue'] = None; st.session_state['design_map_key'] += 1; st.rerun()
+    if c_del5.button("🗑️ Effacer Évitage", width="stretch"): st.session_state['marine_shapes']['evitage'] = None; st.session_state['design_map_key'] += 1; st.rerun()
+    
+    m_design = folium.Map(location=[c_lat, c_lon], zoom_start=16, tiles='OpenStreetMap')
+    folium.Polygon(locations=[(p[1], p[0]) for p in st.session_state['geoms']['poly']], color='black', weight=2, fill=False).add_to(m_design)
+    
+    # Affichage des formes existantes (sauvegardées)
+    shapes = st.session_state['marine_shapes']
+    if shapes['terre_plein']: folium.Polygon(locations=[(p[1], p[0]) for p in shapes['terre_plein']], color='#00FF00', weight=3, fill=True, fill_opacity=0.3, tooltip="Terre-Plein").add_to(m_design)
+    if shapes['bassin']: folium.Polygon(locations=[(p[1], p[0]) for p in shapes['bassin']], color='#00FFFF', weight=3, fill=True, fill_opacity=0.3, tooltip="Bassin de Dragage").add_to(m_design)
+    if shapes['quai']: folium.PolyLine(locations=[(p[1], p[0]) for p in shapes['quai']], color='#000000', weight=6, tooltip="Mur de Quai").add_to(m_design)
+    if shapes['digue']: folium.PolyLine(locations=[(p[1], p[0]) for p in shapes['digue']], color='#FF0000', weight=6, tooltip="Digue").add_to(m_design)
+    if shapes['evitage']: folium.Circle(location=(shapes['evitage'][0][1], shapes['evitage'][0][0]), radius=shapes['evitage'][1], color='#0000FF', weight=3, fill=True, fill_opacity=0.3, tooltip="Cercle d'Évitage").add_to(m_design)
+
+    # Configuration conditionnelle de l'outil Draw
+    draw_opts = {'polyline': False, 'polygon': False, 'circle': False, 'rectangle': False, 'marker': False}
+    if "Terre-Plein" in draw_mode: draw_opts['polygon'] = {'shapeOptions': {'color': '#00FF00'}}
+    elif "Bassin" in draw_mode: draw_opts['polygon'] = {'shapeOptions': {'color': '#00FFFF'}}
+    elif "Quai" in draw_mode: draw_opts['polyline'] = {'shapeOptions': {'color': '#000000', 'weight': 6}}
+    elif "Digue" in draw_mode: draw_opts['polyline'] = {'shapeOptions': {'color': '#FF0000', 'weight': 6}}
+    elif "Cercle" in draw_mode: draw_opts['circle'] = {'shapeOptions': {'color': '#0000FF'}}
+
+    if "Navigation" not in draw_mode:
+        Draw(export=False, draw_options=draw_opts).add_to(m_design)
+    
+    # Rendu Map (Seulement last_active_drawing est capturé pour éviter l'infinite loop)
+    design_map_data = st_folium(m_design, width="100%", height=500, key=f"design_map_{st.session_state['design_map_key']}", returned_objects=["last_active_drawing"])
+
+    # Traitement du nouveau tracé
+    if design_map_data and design_map_data.get("last_active_drawing"):
+        geom = design_map_data["last_active_drawing"]["geometry"]
+        props = design_map_data["last_active_drawing"].get("properties", {})
+        coords = geom["coordinates"]
+        
+        updated = False
+        if "Terre-Plein" in draw_mode and geom["type"] == "Polygon":
+            st.session_state['marine_shapes']['terre_plein'] = coords[0]
+            updated = True
+        elif "Bassin" in draw_mode and geom["type"] == "Polygon":
+            st.session_state['marine_shapes']['bassin'] = coords[0]
+            updated = True
+        elif "Quai" in draw_mode and geom["type"] == "LineString":
+            st.session_state['marine_shapes']['quai'] = coords
+            updated = True
+        elif "Digue" in draw_mode and geom["type"] == "LineString":
+            st.session_state['marine_shapes']['digue'] = coords
+            updated = True
+        elif "Cercle" in draw_mode and geom["type"] == "Point":
+            st.session_state['marine_shapes']['evitage'] = (coords, props.get('radius', 50))
+            updated = True
+            
+        if updated:
+            st.session_state['design_map_key'] += 1 # Remount map pour effacer le layer temporaire Draw
+            st.rerun()
+
     # --- MOTEUR 3D : CALCUL DU Z CIBLE (Z_FGL_Target) ---
     z_targets = []
-    term_poly = Polygon([to_m(lon, lat) for lon, lat in term_coords_ll]) if term_coords_ll else None
-    bassin_poly = Polygon([to_m(lon, lat) for lon, lat in bassin_coords]) if bassin_coords else None
-    digue_line = LineString([to_m(lon, lat) for lon, lat in digue_coords]) if digue_coords else None
-    quai_line = LineString([to_m(lon, lat) for lon, lat in quai_coords]) if quai_coords else None
-    evit_pt = Point(to_m(evitage_circle[0][0], evitage_circle[0][1])) if evitage_circle else None
-    evit_rad = evitage_circle[1] if evitage_circle else 0
+    
+    # Extractions des formes pour le moteur
+    term_poly = Polygon([to_m(lon, lat) for lon, lat in shapes['terre_plein']]) if shapes['terre_plein'] else None
+    bassin_poly = Polygon([to_m(lon, lat) for lon, lat in shapes['bassin']]) if shapes['bassin'] else None
+    digue_line = LineString([to_m(lon, lat) for lon, lat in shapes['digue']]) if shapes['digue'] and len(shapes['digue'])>1 else None
+    quai_line = LineString([to_m(lon, lat) for lon, lat in shapes['quai']]) if shapes['quai'] and len(shapes['quai'])>1 else None
+    evit_pt = Point(to_m(shapes['evitage'][0][0], shapes['evitage'][0][1])) if shapes['evitage'] else None
+    evit_rad = shapes['evitage'][1] if shapes['evitage'] else 0
 
     if term_poly and not term_poly.is_valid: term_poly = term_poly.buffer(0)
     if bassin_poly and not bassin_poly.is_valid: bassin_poly = bassin_poly.buffer(0)
 
+    # Base de l'eau (Pente intégrée)
     app_slope = design_slope_pct 
     app_az = rotation_offset 
     S_s = app_slope / 100.0 
     ux_s, uy_s = math.sin(math.radians(app_az)), math.cos(math.radians(app_az)) 
     df['Z_sh_base'] = z_chenal - S_s * (df['X']*ux_s + df['Y']*uy_s) 
+
+    bounds_stats = []
 
     for x, y, z_base in zip(df['X'], df['Y'], df['Z_sh_base']):
         pt = Point(x, y)
@@ -402,6 +431,7 @@ if st.session_state['raw_df'] is not None:
 
     df['Z_FGL_Target'] = z_targets
     
+    # Interdiction remblai mer
     if not allow_reclam:
         mask_norec = (df['Z_Ext'] <= df['Z_FGL_Target']) & (df['Z_Ext'] <= 0)
         df['Z_FGL'] = df['Z_FGL_Target'].copy()
@@ -507,7 +537,7 @@ if st.session_state['raw_df'] is not None:
         h_pluie = a * ((t*60)**(1-b))
         ch1.success(f"Hauteur de pluie: {h_pluie:.1f} mm")
         
-        area_net = st.session_state['rect_data']['area'] if st.session_state['rect_data']['area'] > 0 else area_m2
+        area_net = term_poly.area if term_poly else area_m2
         s_drain = ch2.number_input("Surface (m²)", value=float(area_net))
         cr = ch2.slider("Ruissellement (Cr)", 0.1, 1.0, 0.9)
         q_fuite = ch2.number_input("Fuite (L/s/ha)", value=10.0)
@@ -525,19 +555,19 @@ if st.session_state['raw_df'] is not None:
         m_plan = folium.Map(location=[c_lat, c_lon], zoom_start=16, tiles=None)
         folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', opacity=opac).add_to(m_plan)
         
-        # Trace du projet
-        if term_coords_ll: folium.Polygon(locations=term_coords_ll, color='magenta', weight=4, fill=True, fill_opacity=0.2, tooltip="Terre-Plein (IA)").add_to(m_plan)
-        if bassin_coords: folium.Polygon(locations=bassin_coords, color='cyan', weight=3, fill=True, fill_opacity=0.2, dash_array='5,5', tooltip="Bassin Dragué").add_to(m_plan)
-        if digue_coords: folium.PolyLine(locations=[(lat, lon) for lon, lat in digue_coords], color='red', weight=8, tooltip="Digue").add_to(m_plan)
-        if quai_coords: folium.PolyLine(locations=[(lat, lon) for lon, lat in quai_coords], color='black', weight=8, tooltip="Quai").add_to(m_plan)
+        # Trace du projet sur le plan final
+        if shapes['terre_plein']: folium.Polygon(locations=[(p[1], p[0]) for p in shapes['terre_plein']], color='#00FF00', weight=4, fill=False).add_to(m_plan)
+        if shapes['bassin']: folium.Polygon(locations=[(p[1], p[0]) for p in shapes['bassin']], color='#00FFFF', weight=3, fill=False, dash_array='5,5').add_to(m_plan)
+        if shapes['quai']: folium.PolyLine(locations=[(p[1], p[0]) for p in shapes['quai']], color='#000000', weight=8).add_to(m_plan)
+        if shapes['digue']: folium.PolyLine(locations=[(p[1], p[0]) for p in shapes['digue']], color='#FF0000', weight=8).add_to(m_plan)
         
         try:
             fig, ax = plt.subplots()
             triang = tri.Triangulation(df['Lon'], df['Lat'])
-            levels = np.arange(math.floor(df['Z_Ext'].min()), math.ceil(df['Z_Ext'].max()) + step_c, step_c)
+            levels = np.arange(math.floor(df['Z_FGL'].min()), math.ceil(df['Z_FGL'].max()) + step_c, step_c)
             if len(levels) > 1:
-                contour = ax.tricontour(triang, df['Z_Ext'], levels=levels)
-                cmp = cm.LinearColormap(['darkblue', 'blue', 'cyan', 'green', 'yellow', 'red'], vmin=df['Z_Ext'].min(), vmax=df['Z_Ext'].max())
+                contour = ax.tricontour(triang, df['Z_FGL'], levels=levels) # Contours du projet fini
+                cmp = cm.LinearColormap(['darkblue', 'blue', 'cyan', 'green', 'yellow', 'red'], vmin=df['Z_FGL'].min(), vmax=df['Z_FGL'].max())
                 m_plan.add_child(cmp)
                 if hasattr(contour, 'allsegs'):
                     for i, segs in enumerate(contour.allsegs):
@@ -560,13 +590,13 @@ if st.session_state['raw_df'] is not None:
     df_limite = pd.DataFrame([{"Lat": lat, "Lon": lon} for lon, lat in st.session_state['geoms']['poly']])
     col_dl1.download_button("📥 1. Limite Initiale (CSV)", df_limite.to_csv(index=False).encode('utf-8'), "1_Limite_Initiale.csv", "text/csv", width="stretch")
         
-    if term_coords_ll:
-        df_magenta = pd.DataFrame([{"Lat": lat, "Lon": lon} for lat, lon in term_coords_ll])
-        col_dl2.download_button("📥 2. Emprise Terre-Plein (CSV)", df_magenta.to_csv(index=False).encode('utf-8'), "2_Emprise_Terre_Plein.csv", "text/csv", width="stretch")
+    if shapes['terre_plein']:
+        df_tp = pd.DataFrame([{"Lat": lat, "Lon": lon} for lon, lat in shapes['terre_plein']])
+        col_dl2.download_button("📥 2. Emprise Terre-Plein (CSV)", df_tp.to_csv(index=False).encode('utf-8'), "2_Emprise_Terre_Plein.csv", "text/csv", width="stretch")
             
-    if best_shape_ll:
-        df_shape = pd.DataFrame([{"Lat": lat, "Lon": lon} for lat, lon in best_shape_ll[0]])
-        col_dl3.download_button(f"📥 3. {current_shape_type} IA (CSV)", df_shape.to_csv(index=False).encode('utf-8'), f"3_Forme_Optimisee.csv", "text/csv", width="stretch")
+    if shapes['bassin']:
+        df_bs = pd.DataFrame([{"Lat": lat, "Lon": lon} for lon, lat in shapes['bassin']])
+        col_dl3.download_button("📥 3. Bassin Dragage (CSV)", df_bs.to_csv(index=False).encode('utf-8'), "3_Bassin.csv", "text/csv", width="stretch")
 
     col_pdf1, col_pdf2 = st.columns([4, 1]) 
     with col_pdf2: 
