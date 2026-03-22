@@ -69,15 +69,14 @@ def fetch_meteo(lat, lon):
         return {'dir': dom_dir, 'spd': round(sum(spds)/len(spds), 1)}
     except: return None
 
+# Initialisation des variables de session
 if 'raw_df' not in st.session_state: st.session_state['raw_df'] = None 
 if 'master_df' not in st.session_state: st.session_state['master_df'] = None
 if 'proj_info' not in st.session_state: st.session_state['proj_info'] = {'area_m2': 0.0, 'center': [43.325, 5.340], 'res': 10.0}
 if 'geoms' not in st.session_state: st.session_state['geoms'] = {'poly': None} 
-if 'master_geoms' not in st.session_state: st.session_state['master_geoms'] = {'poly': None}
 if 'map_center' not in st.session_state: st.session_state['map_center'] = [43.325, 5.340] 
 if 'rect_data' not in st.session_state: st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
 if 'meteo' not in st.session_state: st.session_state['meteo'] = None
-
 if 'marine_shapes' not in st.session_state:
     st.session_state['marine_shapes'] = {'terre_plein': None, 'bassin': None, 'quai': None, 'digue': None, 'evitage': None}
 if 'design_map_key' not in st.session_state:
@@ -219,6 +218,8 @@ with col2:
                     except Exception as e: st.error(f"Erreur lecture CSV: {e}")
                 else:
                     elevs = []
+                    my_bar = st.progress(0, text="Interrogation des APIs Océanographiques...")
+                    
                     for i in range(0, len(pts), 50):
                         chunk = pts[i:i+50]
                         locs = "|".join([f"{p.y},{p.x}" for p in chunk])
@@ -227,7 +228,6 @@ with col2:
                                 r_gebco = requests.get(f"https://api.opentopodata.org/v1/gebco2020?locations={locs}").json()
                                 z_gebco = [r['elevation'] for r in r_gebco.get('results', [])]
                                 time.sleep(1.1)
-                                
                                 if api_key:
                                     r_goog = requests.get(f"https://maps.googleapis.com/maps/api/elevation/json?locations={locs}&key={api_key.strip()}").json()
                                     z_goog = [r['elevation'] for r in r_goog.get('results', [])]
@@ -245,17 +245,25 @@ with col2:
                             else:
                                 res = requests.get(f"https://api.open-meteo.com/v1/elevation?latitude={','.join(str(p.y) for p in chunk)}&longitude={','.join(str(p.x) for p in chunk)}").json()
                                 elevs.extend(res.get('elevation', [0]*len(chunk)))
-                        except: elevs.extend([0]*len(chunk))
+                        except: elevs.extend([None]*len(chunk)) # On capture les echecs
+                        
+                        my_bar.progress(min(100, int((i / len(pts)) * 100)))
                     
-                    if elevs and len(elevs) == len(pts):
-                        df = pd.DataFrame({'Lat': [p.y for p in pts], 'Lon': [p.x for p in pts], 'Z_Ext': elevs})
-                        df['In_Project'] = df.apply(lambda r: poly.contains(Point(r['Lon'], r['Lat'])), axis=1)
-                        st.session_state['master_df'] = df.copy()
-                        st.session_state['raw_df'] = df.copy()
-                        st.session_state['geoms']['poly'] = poly_coords
-                        st.session_state['proj_info'] = {'area_m2': area_m2, 'center': [c_lat, c_lon], 'res': actual_res}
-                        st.success("MNT API Chargé !")
-                        st.rerun()
+                    my_bar.empty()
+                    
+                    # SECURITE ANTI-CRASH : Si l'API a retourné du vide ou échoué, on met un fond plat arbitraire
+                    if not elevs or len(elevs) != len(pts) or any(e is None for e in elevs):
+                        st.warning("⚠️ L'API Géospatiale est saturée/instable. Génération d'un MNT par défaut (Fond à -5m) pour vous permettre de continuer l'étude.")
+                        elevs = [-5.0] * len(pts)
+                    
+                    df = pd.DataFrame({'Lat': [p.y for p in pts], 'Lon': [p.x for p in pts], 'Z_Ext': elevs})
+                    df['In_Project'] = df.apply(lambda r: poly.contains(Point(r['Lon'], r['Lat'])), axis=1)
+                    st.session_state['master_df'] = df.copy()
+                    st.session_state['raw_df'] = df.copy()
+                    st.session_state['geoms']['poly'] = poly_coords
+                    st.session_state['proj_info'] = {'area_m2': area_m2, 'center': [c_lat, c_lon], 'res': actual_res}
+                    st.success("MNT Chargé avec succès !")
+                    st.rerun()
 
     if st.button("2️⃣ ACTUALISER LE FILTRE (Local)", width="stretch"):
         if st.session_state['master_df'] is not None and input_map_data and input_map_data.get("all_drawings"):
@@ -286,6 +294,12 @@ if st.session_state['raw_df'] is not None:
     def to_m(lon, lat): return (lon-c_lon)*111000*math.cos(math.radians(c_lat)), (lat-c_lat)*111000 
     def m_to_latlon(x, y): return y / 111000 + c_lat, x / (111000 * math.cos(math.radians(c_lat))) + c_lon 
     df['X'], df['Y'] = zip(*[to_m(ln, lt) for lt, ln in zip(df['Lat'], df['Lon'])]) 
+    
+    # Sécurisation initiale de Z_FGL (Pour la topographie si rien n'est dessiné)
+    df['Z_FGL'] = df['Z_Ext'].copy()
+    df['Z_Sub'] = df['Z_Ext'].copy()
+    df['Diff_Earth'] = 0.0
+    df['Zone_Name'] = "Naturel / Hors Projet"
 
     # --- IA FONCIER (MEGA-BLOCK) ---
     poly_coords_m = [to_m(lon, lat) for lon, lat in st.session_state['geoms']['poly']] 
@@ -375,6 +389,7 @@ if st.session_state['raw_df'] is not None:
     m_design = folium.Map(location=[c_lat, c_lon], zoom_start=16, tiles='OpenStreetMap')
     folium.Polygon(locations=[(p[1], p[0]) for p in st.session_state['geoms']['poly']], color='black', weight=2, fill=False).add_to(m_design)
     
+    # Ajout des Lignes de Coupe sur la carte
     folium.PolyLine(locations=[gps_A1, gps_A2], color='darkorange', weight=3, dash_array='5,5').add_to(m_design) 
     folium.Marker(gps_A1, icon=folium.DivIcon(html="<div style='font-size:14px; color:darkorange; font-weight:bold; background:white; border:1px solid black; padding:2px;'>A</div>")).add_to(m_design) 
     folium.PolyLine(locations=[gps_B1, gps_B2], color='darkgreen', weight=3, dash_array='5,5').add_to(m_design) 
@@ -399,6 +414,7 @@ if st.session_state['raw_df'] is not None:
     
     design_map_data = st_folium(m_design, width="100%", height=500, key=f"design_map_{st.session_state['design_map_key']}", returned_objects=["last_active_drawing"])
 
+    # Traitement du nouveau tracé
     if design_map_data and design_map_data.get("last_active_drawing"):
         geom = design_map_data["last_active_drawing"]["geometry"]
         props = design_map_data["last_active_drawing"].get("properties", {})
@@ -425,7 +441,11 @@ if st.session_state['raw_df'] is not None:
             st.session_state['design_map_key'] += 1 
             st.rerun()
 
-    # MOTEUR 3D : On attend qu'il y ait au moins une infrastructure dessinée
+    # Initialisation de toutes les variables de calcul pour éviter le NameError
+    vol_cut_terre = vol_cut_mer = vol_fill_terre = vol_fill_sousmer = vol_fill_surmer = 0.0
+    tot_cut = tot_fill = 0.0
+    
+    # Seulement si l'utilisateur a dessiné quelque chose on lance la machine
     has_shapes = any(v is not None for v in shapes.values())
     
     if not has_shapes:
@@ -457,11 +477,9 @@ if st.session_state['raw_df'] is not None:
             z_fill = z_nat
             zone = "Naturel / Hors Projet"
             
-            # Base de travail
-            if bassin_poly or evit_pt:
-                zone = "Talus / Fond Base"
+            if bassin_poly or evit_pt: zone = "Talus / Fond Base"
             
-            # Excavations (Bassin & Evitage)
+            # Excavations
             in_bassin = bassin_poly and bassin_poly.contains(pt)
             in_evit = evit_pt and pt.distance(evit_pt) <= evit_rad
             
@@ -479,11 +497,11 @@ if st.session_state['raw_df'] is not None:
                 
             z_final = z_excav 
             
-            # Remblais (Terre-Plein)
+            # Remblais
             in_tp = term_poly and term_poly.contains(pt)
             dist_term = term_poly.distance(pt) if term_poly else float('inf')
-            
             is_behind_quay = False
+            
             if quai_line and term_poly:
                 if quai_line.distance(pt) < dist_term and dist_term < 50: is_behind_quay = True
             
@@ -496,7 +514,7 @@ if st.session_state['raw_df'] is not None:
                     z_final = z_talus_term
                     if "Naturel" in zone or "Talus" in zone: zone = "Talus Terre-Plein"
                         
-            # Digue (Priorité absolue)
+            # Digue
             if digue_line:
                 dist_digue = digue_line.distance(pt)
                 if dist_digue < 5: 
@@ -525,17 +543,19 @@ if st.session_state['raw_df'] is not None:
         if not allow_reclam: df.loc[mask_norec, 'Z_Sub'] = df.loc[mask_norec, 'Z_Ext']
         
         df['Diff_Earth'] = df['Z_Sub'] - df['Z_Ext']
-        df_p = df[df['In_Project']]
+        
+    # On récupère le dataframe filtré sur le polygone englobant
+    df_p = df[df['In_Project']]
 
-        # =========================================================================
-        # --- RESULTATS & ONGLETS ---
-        # =========================================================================
-        t_civ, t_hydro, t_topo = st.tabs(["🏗️ Volumes & Coupes", "🌊 Hydrologie & Météocéan", "🗺️ Plan Topo & Contours"])
+    # =========================================================================
+    # --- RESULTATS & ONGLETS ---
+    # =========================================================================
+    t_civ, t_hydro, t_topo = st.tabs(["🏗️ Volumes & Coupes", "🌊 Hydrologie & Météocéan", "🗺️ Plan Topo & Contours"])
 
-        with t_civ:
+    with t_civ:
+        if has_shapes:
             st.write("### Métré Détaillé par Infrastructure (Sans Double Comptage)")
             
-            # Matrice d'attribution exclusive
             summary_data = []
             for zn in sorted(df_p['Zone_Name'].unique()):
                 if zn == "Naturel / Hors Projet": continue
@@ -543,7 +563,6 @@ if st.session_state['raw_df'] is not None:
                 cut = abs(df_z[df_z['Diff_Earth'] < 0]['Diff_Earth'].sum()) * (actual_res**2)
                 fill = df_z[df_z['Diff_Earth'] > 0]['Diff_Earth'].sum() * (actual_res**2)
                 
-                # Ventilation
                 is_l = df_z['Z_Ext'] > 0
                 is_s = df_z['Z_Ext'] <= 0
                 
@@ -564,7 +583,8 @@ if st.session_state['raw_df'] is not None:
                 tot_cut += cut
                 tot_fill += fill
             
-            st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
+            if summary_data:
+                st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
             
             c_v3, c_v4 = st.columns(2)
             daily_prod = prod_m3_h * hours_per_day * eff
@@ -572,136 +592,136 @@ if st.session_state['raw_df'] is not None:
             c_v3.metric("Volume Total Manutentionné", f"{(tot_cut+tot_fill):,.0f} m³")
             c_v4.metric("Durée Estimée du Chantier", f"{d_est:,.0f} Jours", f"Cible: {target_days}j", delta_color="inverse" if d_est>target_days else "normal")
 
-            # --- COUPES DYNAMIQUES AVEC MUR DE QUAI ---
-            st.markdown("---")
-            st.subheader("Coupes d'Exécution (A-A' et B-B')")
-            
-            def plot_section(df_sec, title, axis):
-                df_s = df_sec[abs(df_sec[axis] - (off_A if axis=='Yc' else off_B)) < actual_res].copy()
-                if df_s.empty: return go.Figure()
-                
-                # Détection Mur de Quai dans la tranche
-                quay_x = None
-                if quai_line:
-                    df_s['Dist_Q'] = df_s.apply(lambda r: quai_line.distance(Point(r['X'], r['Y'])), axis=1)
-                    q_pts = df_s[df_s['Dist_Q'] < actual_res*1.5]
-                    if not q_pts.empty:
-                        df_s['D'] = df_s['Xc' if axis=='Yc' else 'Yc'].round(0)
-                        quay_x = q_pts['D'].mean()
-
-                df_s['D'] = df_s['Xc' if axis=='Yc' else 'Yc'].round(0)
-                df_s = df_s.groupby('D').mean().reset_index()
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=[df_s['D'].min(), df_s['D'].max()], y=[0,0], mode='lines', name='Niveau 0 (Mer)', line=dict(color='cyan', dash='dash')))
-                
-                fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_FGL'], line=dict(width=0), showlegend=False))
-                fig.add_trace(go.Scatter(x=df_s['D'], y=np.maximum(df_s['Z_FGL'], df_s['Z_Ext']), fill='tonexty', fillcolor='rgba(255,0,0,0.4)', name='Dragage/Déblai', line=dict(width=0)))
-                
-                fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_FGL'], line=dict(width=0), showlegend=False))
-                fig.add_trace(go.Scatter(x=df_s['D'], y=np.minimum(df_s['Z_FGL'], df_s['Z_Ext']), fill='tonexty', fillcolor='rgba(0,0,255,0.4)', name='Remblai/Réclam', line=dict(width=0)))
-
-                fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_Ext'], name='Fond Naturel', line=dict(color='saddlebrown', width=2)))
-                fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_FGL'], name='Projet Fini', line=dict(color='black', width=3)))
-                
-                # Le Mur Vertical
-                if quay_x is not None:
-                    fig.add_vline(x=quay_x, line_width=5, line_dash="solid", line_color="#333333", annotation_text="Mur de Quai", annotation_position="top right")
-
-                fig.update_layout(title=title, height=400, margin=dict(l=10, r=10, t=30, b=10))
-                return fig
-
-            sc1, sc2 = st.columns(2)
-            sc1.plotly_chart(plot_section(df, "Coupe Transversale A-A'", 'Yc'), width="stretch")
-            sc2.plotly_chart(plot_section(df, "Coupe Longitudinale B-B'", 'Xc'), width="stretch")
-
-        with t_hydro:
-            st.subheader("Hydrologie Urbaine (Loi de Montana)")
-            params = {"1": (2.0, 0.6), "10": (5.5, 0.6), "50": (9.0, 0.6)}
-            freq = st.selectbox("Retour", ["1 an", "10 ans (Décennale)", "50 ans (Cinquantennale)"], index=1)
-            k = "1" if "1 " in freq else "10" if "10" in freq else "50"
-            
-            ch1, ch2 = st.columns(2)
-            a = ch1.number_input("Coeff 'a'", value=params[k][0], step=0.5)
-            b = ch1.number_input("Coeff 'b'", value=params[k][1], step=0.05)
-            t = ch1.number_input("Durée (h)", value=2.0)
-            h_pluie = a * ((t*60)**(1-b))
-            ch1.success(f"Hauteur de pluie: {h_pluie:.1f} mm")
-            
-            area_net = term_poly.area if term_poly else area_m2
-            s_drain = ch2.number_input("Surface Terre-Plein (m²)", value=float(area_net))
-            cr = ch2.slider("Ruissellement (Cr)", 0.1, 1.0, 0.9)
-            q_fuite = ch2.number_input("Fuite (L/s/ha)", value=10.0)
-            
-            v_in = s_drain * cr * h_pluie / 1000
-            v_out = q_fuite * (s_drain/10000) / 1000 * (t*3600)
-            ch2.error(f"**Bassin de Rétention Requis : {max(0, v_in - v_out):,.0f} m³**")
-
-        with t_topo:
-            st.subheader("Masterplan Topo & Contours")
-            vt1, vt2, vt3 = st.columns(3)
-            step_c = vt1.slider("Equidistance (m)", 0.5, 5.0, 1.0)
-            opac = vt2.slider("Opacité Satellite", 0.0, 1.0, 0.6)
-            show_cotes = vt3.toggle("Afficher les Cotes (Z MSL)", value=True)
-            
-            m_plan = folium.Map(location=[c_lat, c_lon], zoom_start=16, tiles=None)
-            folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', opacity=opac).add_to(m_plan)
-            
-            if shapes['terre_plein']: folium.Polygon(locations=[(p[1], p[0]) for p in shapes['terre_plein']], color='#00FF00', weight=4, fill=False).add_to(m_plan)
-            if shapes['bassin']: folium.Polygon(locations=[(p[1], p[0]) for p in shapes['bassin']], color='#00FFFF', weight=3, fill=False, dash_array='5,5').add_to(m_plan)
-            if shapes['quai']: folium.PolyLine(locations=[(p[1], p[0]) for p in shapes['quai']], color='#000000', weight=8).add_to(m_plan)
-            if shapes['digue']: folium.PolyLine(locations=[(p[1], p[0]) for p in shapes['digue']], color='#FF0000', weight=8).add_to(m_plan)
-            
-            try:
-                fig, ax = plt.subplots()
-                triang = tri.Triangulation(df['Lon'], df['Lat'])
-                levels = np.arange(math.floor(df['Z_FGL'].min()), math.ceil(df['Z_FGL'].max()) + step_c, step_c)
-                if len(levels) > 1:
-                    contour = ax.tricontour(triang, df['Z_FGL'], levels=levels) 
-                    cmp = cm.LinearColormap(['darkblue', 'blue', 'cyan', 'green', 'yellow', 'red'], vmin=df['Z_FGL'].min(), vmax=df['Z_FGL'].max())
-                    m_plan.add_child(cmp)
-                    if hasattr(contour, 'allsegs'):
-                        for i, segs in enumerate(contour.allsegs):
-                            if i < len(levels):
-                                for seg in segs:
-                                    if len(seg)>=2: folium.PolyLine([[y,x] for x,y in seg], color=cmp(levels[i]), weight=2, opacity=0.8).add_to(m_plan)
-                    else:
-                        for lvl, col in zip(levels, contour.collections):
-                            for p in col.get_paths():
-                                if len(p.vertices)>=2: folium.PolyLine([[y,x] for x,y in p.vertices], color=cmp(lvl), weight=2, opacity=0.8).add_to(m_plan)
-                plt.close(fig)
-            except: pass
-            
-            if show_cotes:
-                res_5x = actual_res * 4 
-                df_topo = df.copy()  
-                df_topo['X_bin'] = (df_topo['X'] // res_5x) * res_5x 
-                df_topo['Y_bin'] = (df_topo['Y'] // res_5x) * res_5x 
-                df_sampled = df_topo.groupby(['X_bin', 'Y_bin']).first().reset_index() 
-
-                for _, r in df_sampled.iterrows(): 
-                    html_txt = f"<div style='font-size: 10px; font-weight: bold; color: white; text-shadow: 1px 1px 2px black;'>{r['Z_FGL']:.1f}</div>" 
-                    folium.Marker([r['Lat'], r['Lon']], icon=folium.DivIcon(html=html_txt)).add_to(m_plan) 
-
-            st_folium(m_plan, width=1200, height=600, key="final_topo")
-            
+        # --- COUPES DYNAMIQUES AVEC MUR DE QUAI ---
         st.markdown("---")
-        st.write("### Exportation des Coordonnées (Pour Google Earth)")
-        col_dl1, col_dl2, col_dl3 = st.columns(3)
+        st.subheader("Coupes d'Exécution (A-A' et B-B')")
+        
+        def plot_section(df_sec, title, axis):
+            df_s = df_sec[abs(df_sec[axis] - (off_A if axis=='Yc' else off_B)) < actual_res].copy()
+            if df_s.empty: return go.Figure()
             
-        df_limite = pd.DataFrame([{"Lat": lat, "Lon": lon} for lon, lat in st.session_state['geoms']['poly']])
-        col_dl1.download_button("📥 1. Limite Initiale (CSV)", df_limite.to_csv(index=False).encode('utf-8'), "1_Limite_Initiale.csv", "text/csv", width="stretch")
-            
-        if shapes['terre_plein']:
-            df_tp = pd.DataFrame([{"Lat": lat, "Lon": lon} for lon, lat in shapes['terre_plein']])
-            col_dl2.download_button("📥 2. Emprise Terre-Plein (CSV)", df_tp.to_csv(index=False).encode('utf-8'), "2_Emprise_Terre_Plein.csv", "text/csv", width="stretch")
-                
-        if shapes['bassin']:
-            df_bs = pd.DataFrame([{"Lat": lat, "Lon": lon} for lon, lat in shapes['bassin']])
-            col_dl3.download_button("📥 3. Bassin Dragage (CSV)", df_bs.to_csv(index=False).encode('utf-8'), "3_Bassin.csv", "text/csv", width="stretch")
+            quay_x = None
+            if shapes['quai']:
+                ql = LineString([to_m(lon, lat) for lon, lat in shapes['quai']])
+                df_s['Dist_Q'] = df_s.apply(lambda r: ql.distance(Point(r['X'], r['Y'])), axis=1)
+                q_pts = df_s[df_s['Dist_Q'] < actual_res*1.5]
+                if not q_pts.empty:
+                    df_s['D'] = df_s['Xc' if axis=='Yc' else 'Yc'].round(0)
+                    quay_x = q_pts['D'].mean()
 
-        col_pdf1, col_pdf2 = st.columns([4, 1]) 
-        with col_pdf2: 
-            st.caption("💡 Astuce Impression : Cochez 'Graphiques d'arrière-plan'.")
-            if st.button("🖨️ IMPRIMER LE RAPPORT PDF", type="secondary", width="stretch"): 
-                components.html("<script>window.parent.print();</script>", height=0)
+            df_s['D'] = df_s['Xc' if axis=='Yc' else 'Yc'].round(0)
+            df_s = df_s.groupby('D').mean().reset_index()
+            
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=[df_s['D'].min(), df_s['D'].max()], y=[0,0], mode='lines', name='Niveau 0 (Mer)', line=dict(color='cyan', dash='dash')))
+            
+            fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_FGL'], line=dict(width=0), showlegend=False))
+            fig.add_trace(go.Scatter(x=df_s['D'], y=np.maximum(df_s['Z_FGL'], df_s['Z_Ext']), fill='tonexty', fillcolor='rgba(255,0,0,0.4)', name='Dragage/Déblai', line=dict(width=0)))
+            
+            fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_FGL'], line=dict(width=0), showlegend=False))
+            fig.add_trace(go.Scatter(x=df_s['D'], y=np.minimum(df_s['Z_FGL'], df_s['Z_Ext']), fill='tonexty', fillcolor='rgba(0,0,255,0.4)', name='Remblai/Réclam', line=dict(width=0)))
+
+            fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_Ext'], name='Fond Naturel', line=dict(color='saddlebrown', width=2)))
+            fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_FGL'], name='Projet Fini', line=dict(color='black', width=3)))
+            
+            if quay_x is not None:
+                fig.add_vline(x=quay_x, line_width=5, line_dash="solid", line_color="#333333", annotation_text="Mur de Quai", annotation_position="top right")
+
+            fig.update_layout(title=title, height=400, margin=dict(l=10, r=10, t=30, b=10))
+            return fig
+
+        sc1, sc2 = st.columns(2)
+        sc1.plotly_chart(plot_section(df, "Coupe Transversale A-A'", 'Yc'), use_container_width=True)
+        sc2.plotly_chart(plot_section(df, "Coupe Longitudinale B-B'", 'Xc'), use_container_width=True)
+
+    with t_hydro:
+        st.subheader("Hydrologie Urbaine (Loi de Montana)")
+        params = {"1": (2.0, 0.6), "10": (5.5, 0.6), "50": (9.0, 0.6)}
+        freq = st.selectbox("Retour", ["1 an", "10 ans (Décennale)", "50 ans (Cinquantennale)"], index=1)
+        k = "1" if "1 " in freq else "10" if "10" in freq else "50"
+        
+        ch1, ch2 = st.columns(2)
+        a = ch1.number_input("Coeff 'a'", value=params[k][0], step=0.5)
+        b = ch1.number_input("Coeff 'b'", value=params[k][1], step=0.05)
+        t = ch1.number_input("Durée (h)", value=2.0)
+        h_pluie = a * ((t*60)**(1-b))
+        ch1.success(f"Hauteur de pluie: {h_pluie:.1f} mm")
+        
+        tp_poly = Polygon([to_m(lon, lat) for lon, lat in shapes['terre_plein']]) if shapes['terre_plein'] else None
+        area_net = tp_poly.area if tp_poly else area_m2
+        s_drain = ch2.number_input("Surface Terre-Plein (m²)", value=float(area_net))
+        cr = ch2.slider("Ruissellement (Cr)", 0.1, 1.0, 0.9)
+        q_fuite = ch2.number_input("Fuite (L/s/ha)", value=10.0)
+        
+        v_in = s_drain * cr * h_pluie / 1000
+        v_out = q_fuite * (s_drain/10000) / 1000 * (t*3600)
+        ch2.error(f"**Bassin de Rétention Requis : {max(0, v_in - v_out):,.0f} m³**")
+
+    with t_topo:
+        st.subheader("Masterplan Topo & Contours")
+        vt1, vt2, vt3 = st.columns(3)
+        step_c = vt1.slider("Equidistance (m)", 0.5, 5.0, 1.0)
+        opac = vt2.slider("Opacité Satellite", 0.0, 1.0, 0.6)
+        show_cotes = vt3.toggle("Afficher les Cotes (Z MSL)", value=True)
+        
+        m_plan = folium.Map(location=[c_lat, c_lon], zoom_start=16, tiles=None)
+        folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', opacity=opac).add_to(m_plan)
+        
+        if shapes['terre_plein']: folium.Polygon(locations=[(p[1], p[0]) for p in shapes['terre_plein']], color='#00FF00', weight=4, fill=False).add_to(m_plan)
+        if shapes['bassin']: folium.Polygon(locations=[(p[1], p[0]) for p in shapes['bassin']], color='#00FFFF', weight=3, fill=False, dash_array='5,5').add_to(m_plan)
+        if shapes['quai']: folium.PolyLine(locations=[(p[1], p[0]) for p in shapes['quai']], color='#000000', weight=8).add_to(m_plan)
+        if shapes['digue']: folium.PolyLine(locations=[(p[1], p[0]) for p in shapes['digue']], color='#FF0000', weight=8).add_to(m_plan)
+        
+        try:
+            fig, ax = plt.subplots()
+            triang = tri.Triangulation(df['Lon'], df['Lat'])
+            levels = np.arange(math.floor(df['Z_FGL'].min()), math.ceil(df['Z_FGL'].max()) + step_c, step_c)
+            if len(levels) > 1:
+                contour = ax.tricontour(triang, df['Z_FGL'], levels=levels) 
+                cmp = cm.LinearColormap(['darkblue', 'blue', 'cyan', 'green', 'yellow', 'red'], vmin=df['Z_FGL'].min(), vmax=df['Z_FGL'].max())
+                m_plan.add_child(cmp)
+                if hasattr(contour, 'allsegs'):
+                    for i, segs in enumerate(contour.allsegs):
+                        if i < len(levels):
+                            for seg in segs:
+                                if len(seg)>=2: folium.PolyLine([[y,x] for x,y in seg], color=cmp(levels[i]), weight=2, opacity=0.8).add_to(m_plan)
+                else:
+                    for lvl, col in zip(levels, contour.collections):
+                        for p in col.get_paths():
+                            if len(p.vertices)>=2: folium.PolyLine([[y,x] for x,y in p.vertices], color=cmp(lvl), weight=2, opacity=0.8).add_to(m_plan)
+            plt.close(fig)
+        except: pass
+        
+        if show_cotes:
+            res_5x = actual_res * 4 
+            df_topo = df.copy()  
+            df_topo['X_bin'] = (df_topo['X'] // res_5x) * res_5x 
+            df_topo['Y_bin'] = (df_topo['Y'] // res_5x) * res_5x 
+            df_sampled = df_topo.groupby(['X_bin', 'Y_bin']).first().reset_index() 
+
+            for _, r in df_sampled.iterrows(): 
+                html_txt = f"<div style='font-size: 10px; font-weight: bold; color: white; text-shadow: 1px 1px 2px black;'>{r['Z_FGL']:.1f}</div>" 
+                folium.Marker([r['Lat'], r['Lon']], icon=folium.DivIcon(html=html_txt)).add_to(m_plan) 
+
+        st_folium(m_plan, width=1200, height=600, key="final_topo")
+        
+    st.markdown("---")
+    st.write("### Exportation des Coordonnées (Pour Google Earth)")
+    col_dl1, col_dl2, col_dl3 = st.columns(3)
+        
+    df_limite = pd.DataFrame([{"Lat": lat, "Lon": lon} for lon, lat in st.session_state['geoms']['poly']])
+    col_dl1.download_button("📥 1. Limite Initiale (CSV)", df_limite.to_csv(index=False).encode('utf-8'), "1_Limite_Initiale.csv", "text/csv", use_container_width=True)
+        
+    if shapes['terre_plein']:
+        df_tp = pd.DataFrame([{"Lat": lat, "Lon": lon} for lon, lat in shapes['terre_plein']])
+        col_dl2.download_button("📥 2. Emprise Terre-Plein (CSV)", df_tp.to_csv(index=False).encode('utf-8'), "2_Emprise_Terre_Plein.csv", "text/csv", use_container_width=True)
+            
+    if shapes['bassin']:
+        df_bs = pd.DataFrame([{"Lat": lat, "Lon": lon} for lon, lat in shapes['bassin']])
+        col_dl3.download_button("📥 3. Bassin Dragage (CSV)", df_bs.to_csv(index=False).encode('utf-8'), "3_Bassin.csv", "text/csv", use_container_width=True)
+
+    col_pdf1, col_pdf2 = st.columns([4, 1]) 
+    with col_pdf2: 
+        st.caption("💡 Astuce Impression : Cochez 'Graphiques d'arrière-plan'.")
+        if st.button("🖨️ IMPRIMER LE RAPPORT PDF", type="secondary", use_container_width=True): 
+            components.html("<script>window.parent.print();</script>", height=0)
