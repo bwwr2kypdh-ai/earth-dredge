@@ -14,8 +14,8 @@ import time
 import math 
 import branca.colormap as cm 
 import plotly.graph_objects as go 
-import matplotlib.pyplot as plt
 import matplotlib.tri as tri
+import matplotlib.pyplot as plt
 
 # =========================================================================
 # --- 1. CONFIGURATION DE LA PAGE ---
@@ -373,7 +373,7 @@ if st.session_state['raw_df'] is not None:
     gps_A1, gps_A2 = cut_to_gps(min_xc, off_A), cut_to_gps(max_xc, off_A) 
     gps_B1, gps_B2 = cut_to_gps(off_B, min_yc), cut_to_gps(off_B, max_yc) 
 
-    st.write("🖌️ **Outils de Dessin (Sélectionnez puis dessinez sur la carte) :**")
+    st.info("🖌️ **Instruction pour créer un Quai Vertical :** Dessinez le Polygone du Terre-Plein, puis sélectionnez l'outil 'Mur de Quai' et tracez une Ligne **exactement sur la bordure** du Terre-Plein à convertir. Le talus sera supprimé sur cette portion.")
     draw_mode = st.radio("Sélecteur d'Outil :", 
         ["🟩 Terre-Plein (Polygone)", "🟦 Bassin Dragage (Polygone)", "⚫ Mur de Quai (Ligne)", "🟥 Digue Anti-Houle (Ligne)", "🔵 Cercle d'Évitage (Cercle)", "🔍 Navigation Seule"], 
         horizontal=True, label_visibility="collapsed")
@@ -441,7 +441,7 @@ if st.session_state['raw_df'] is not None:
     has_shapes = any(v is not None for v in shapes.values())
     
     if not has_shapes:
-        st.warning("⚠️ Tracez au moins une infrastructure sur la carte ci-dessus pour déclencher le calcul des volumes.")
+        st.warning("⚠️ Tracez au moins une infrastructure sur la carte ci-dessus pour déclencher le calcul 3D des volumes.")
     else:
         # --- MOTEUR 3D : CALCUL DU Z CIBLE & DES ZONES ---
         z_targets = []
@@ -489,22 +489,29 @@ if st.session_state['raw_df'] is not None:
                 
             z_final = z_excav 
             
-            # Remblais
+            # Remblais et Quai (Désactivation des talus)
             in_tp = term_poly and term_poly.contains(pt)
             dist_term = term_poly.distance(pt) if term_poly else float('inf')
             
             is_behind_quay = False
             if quai_line and term_poly:
-                if quai_line.distance(pt) < dist_term and dist_term < 50: is_behind_quay = True
+                # Tolérance mathématique élargie pour "effacer" le talus si on est proche de la ligne dessinée
+                dist_quai = quai_line.distance(pt)
+                if dist_quai <= dist_term + (actual_res * 2.0): 
+                    is_behind_quay = True
             
             if in_tp:
                 z_final = max(z_final, z_terreplein)
                 zone = "Terre-Plein"
             else:
-                z_talus_term = -float('inf') if is_behind_quay else (z_terreplein - (dist_term / slope_ratio))
-                if z_talus_term > z_final:
-                    z_final = z_talus_term
-                    if "Naturel" in zone or "Talus" in zone: zone = "Talus Terre-Plein"
+                if not is_behind_quay:
+                    z_talus_term = z_terreplein - (dist_term / slope_ratio)
+                    if z_talus_term > z_final:
+                        z_final = z_talus_term
+                        if "Naturel" in zone or "Talus" in zone: zone = "Talus Terre-Plein"
+                else:
+                    if z_terreplein > z_final and ("Naturel" in zone or "Talus" in zone): 
+                        zone = "Mur de Quai (Vertical)"
                         
             # Digue
             if digue_line:
@@ -592,18 +599,18 @@ if st.session_state['raw_df'] is not None:
                 df_s = df_sec[abs(df_sec[axis] - (off_A if axis=='Yc' else off_B)) < actual_res].copy()
                 if df_s.empty: return go.Figure()
                 
-                df_s['D'] = df_s['Xc' if axis=='Yc' else 'Yc'].round(0)
-                
                 quay_x = None
                 if shapes['quai']:
                     ql = LineString([to_m(lon, lat) for lon, lat in shapes['quai']])
                     df_s['Dist_Q'] = df_s.apply(lambda r: ql.distance(Point(r['X'], r['Y'])), axis=1)
-                    q_pts = df_s[df_s['Dist_Q'] < actual_res*1.5].copy() # Ajout du .copy()
+                    q_pts = df_s[df_s['Dist_Q'] < actual_res*1.5].copy()
                     if not q_pts.empty:
                         q_pts['D'] = q_pts['Xc' if axis=='Yc' else 'Yc'].round(0)
                         quay_x = q_pts['D'].mean()
 
-                # On force numeric_only=True pour éviter le TypeError de Pandas !
+                df_s['D'] = df_s['Xc' if axis=='Yc' else 'Yc'].round(0)
+                
+                # CORRECTIF : numeric_only=True pour éviter le TypeError de Pandas avec les chaînes de texte (Zone_Name)
                 df_s = df_s.groupby('D').mean(numeric_only=True).reset_index()
                 
                 fig = go.Figure()
