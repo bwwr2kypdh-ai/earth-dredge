@@ -14,8 +14,8 @@ import time
 import math 
 import branca.colormap as cm 
 import plotly.graph_objects as go 
-import matplotlib.tri as tri
 import matplotlib.pyplot as plt
+import matplotlib.tri as tri
 
 # =========================================================================
 # --- 1. CONFIGURATION DE LA PAGE ---
@@ -69,12 +69,10 @@ def fetch_meteo(lat, lon):
         return {'dir': dom_dir, 'spd': round(sum(spds)/len(spds), 1)}
     except: return None
 
-# Initialisation 100% sécurisée des dictionnaires
 if 'raw_df' not in st.session_state: st.session_state['raw_df'] = None 
 if 'master_df' not in st.session_state: st.session_state['master_df'] = None
 if 'proj_info' not in st.session_state: st.session_state['proj_info'] = {'area_m2': 0.0, 'center': [43.325, 5.340], 'res': 10.0}
 if 'geoms' not in st.session_state: st.session_state['geoms'] = {'poly': None} 
-if 'master_geoms' not in st.session_state: st.session_state['master_geoms'] = {'poly': None}
 if 'map_center' not in st.session_state: st.session_state['map_center'] = [43.325, 5.340] 
 if 'rect_data' not in st.session_state: st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
 if 'meteo' not in st.session_state: st.session_state['meteo'] = None
@@ -201,7 +199,6 @@ with col2:
                         lat_col = next((c for c in local_df.columns if c.lower() in ['lat', 'y', 'latitude']), None)
                         lon_col = next((c for c in local_df.columns if c.lower() in ['lon', 'x', 'longitude']), None)
                         z_col = next((c for c in local_df.columns if c.lower() in ['z', 'alt', 'elevation', 'elevation_m', 'z_ext']), None)
-                        
                         if lat_col and lon_col and z_col:
                             filtered_pts = []
                             for _, row in local_df.iterrows():
@@ -221,7 +218,6 @@ with col2:
                 else:
                     elevs = []
                     my_bar = st.progress(0, text="Interrogation des APIs Océanographiques...")
-                    
                     for i in range(0, len(pts), 50):
                         chunk = pts[i:i+50]
                         locs = "|".join([f"{p.y},{p.x}" for p in chunk])
@@ -234,11 +230,8 @@ with col2:
                                     r_goog = requests.get(f"https://maps.googleapis.com/maps/api/elevation/json?locations={locs}&key={api_key.strip()}").json()
                                     z_goog = [r['elevation'] for r in r_goog.get('results', [])]
                                 else: z_goog = z_gebco
-                                
                                 for zg, zb in zip(z_goog, z_gebco):
-                                    if zb > -1.0: elevs.append(zg) 
-                                    else: elevs.append(zb) 
-                                    
+                                    elevs.append(zg if zb > -1.0 else zb)
                             elif "GEBCO" in api_choice or "ETOPO1" in api_choice:
                                 api_url = "gebco2020" if "GEBCO" in api_choice else "etopo1"
                                 res = requests.get(f"https://api.opentopodata.org/v1/{api_url}?locations={locs}").json()
@@ -251,7 +244,6 @@ with col2:
                         my_bar.progress(min(100, int((i / len(pts)) * 100)))
                     
                     my_bar.empty()
-                    
                     if not elevs or len(elevs) != len(pts) or any(e is None for e in elevs):
                         st.warning("⚠️ L'API Géospatiale est saturée/instable. Génération d'un MNT par défaut (Fond à -5m) pour vous permettre de continuer l'étude.")
                         elevs = [-5.0] * len(pts)
@@ -294,11 +286,6 @@ if st.session_state['raw_df'] is not None:
     def to_m(lon, lat): return (lon-c_lon)*111000*math.cos(math.radians(c_lat)), (lat-c_lat)*111000 
     def m_to_latlon(x, y): return y / 111000 + c_lat, x / (111000 * math.cos(math.radians(c_lat))) + c_lon 
     df['X'], df['Y'] = zip(*[to_m(ln, lt) for lt, ln in zip(df['Lat'], df['Lon'])]) 
-    
-    df['Z_FGL'] = df['Z_Ext'].copy()
-    df['Z_Sub'] = df['Z_Ext'].copy()
-    df['Diff_Earth'] = 0.0
-    df['Zone_Name'] = "Naturel / Hors Projet"
 
     # --- IA FONCIER ---
     poly_coords_m = [to_m(lon, lat) for lon, lat in st.session_state['geoms']['poly']] 
@@ -317,7 +304,6 @@ if st.session_state['raw_df'] is not None:
                     rot_poly = affinity.rotate(core_poly, -angle, origin=centroid, use_radians=False)
                     minx, miny, maxx, maxy = rot_poly.bounds
                     xs, ys = np.linspace(minx, maxx, 15), np.linspace(miny, maxy, 15)
-                    
                     for i in range(len(xs)):
                         for j in range(len(xs)-1, i, -1):
                             w = xs[j] - xs[i]
@@ -373,7 +359,7 @@ if st.session_state['raw_df'] is not None:
     gps_A1, gps_A2 = cut_to_gps(min_xc, off_A), cut_to_gps(max_xc, off_A) 
     gps_B1, gps_B2 = cut_to_gps(off_B, min_yc), cut_to_gps(off_B, max_yc) 
 
-    st.info("🖌️ **Instruction pour créer un Quai Vertical :** Dessinez le Polygone du Terre-Plein, puis sélectionnez l'outil 'Mur de Quai' et tracez une Ligne **exactement sur la bordure** du Terre-Plein à convertir. Le talus sera supprimé sur cette portion.")
+    st.info("🖌️ **Outils de Dessin :** Sélectionnez une option ci-dessous, dessinez sur la carte, le modèle 3D s'ajustera automatiquement.")
     draw_mode = st.radio("Sélecteur d'Outil :", 
         ["🟩 Terre-Plein (Polygone)", "🟦 Bassin Dragage (Polygone)", "⚫ Mur de Quai (Ligne)", "🟥 Digue Anti-Houle (Ligne)", "🔵 Cercle d'Évitage (Cercle)", "🔍 Navigation Seule"], 
         horizontal=True, label_visibility="collapsed")
@@ -419,20 +405,15 @@ if st.session_state['raw_df'] is not None:
         
         updated = False
         if "Terre-Plein" in draw_mode and geom["type"] == "Polygon":
-            st.session_state['marine_shapes']['terre_plein'] = coords[0]
-            updated = True
+            st.session_state['marine_shapes']['terre_plein'] = coords[0]; updated = True
         elif "Bassin" in draw_mode and geom["type"] == "Polygon":
-            st.session_state['marine_shapes']['bassin'] = coords[0]
-            updated = True
+            st.session_state['marine_shapes']['bassin'] = coords[0]; updated = True
         elif "Quai" in draw_mode and geom["type"] == "LineString":
-            st.session_state['marine_shapes']['quai'] = coords
-            updated = True
+            st.session_state['marine_shapes']['quai'] = coords; updated = True
         elif "Digue" in draw_mode and geom["type"] == "LineString":
-            st.session_state['marine_shapes']['digue'] = coords
-            updated = True
+            st.session_state['marine_shapes']['digue'] = coords; updated = True
         elif "Cercle" in draw_mode and geom["type"] == "Point":
-            st.session_state['marine_shapes']['evitage'] = (coords, props.get('radius', 50))
-            updated = True
+            st.session_state['marine_shapes']['evitage'] = (coords, props.get('radius', 50)); updated = True
             
         if updated:
             st.session_state['design_map_key'] += 1 
@@ -443,7 +424,7 @@ if st.session_state['raw_df'] is not None:
     if not has_shapes:
         st.warning("⚠️ Tracez au moins une infrastructure sur la carte ci-dessus pour déclencher le calcul 3D des volumes.")
     else:
-        # --- MOTEUR 3D : CALCUL DU Z CIBLE & DES ZONES ---
+        # --- MOTEUR 3D : LOGIQUE DES DISTANCES ET ZONES D'OMBRE ---
         z_targets = []
         zone_names = []
         
@@ -466,40 +447,51 @@ if st.session_state['raw_df'] is not None:
         for x, y, z_base, z_nat in zip(df['X'], df['Y'], df['Z_sh_base'], df['Z_Ext']):
             pt = Point(x, y)
             z_excav = z_nat
-            z_fill = z_nat
             zone = "Naturel / Hors Projet"
             
-            if bassin_poly or evit_pt: zone = "Talus / Fond Base"
-            
-            # Excavations
+            # Mesures de distances
+            dist_bassin = bassin_poly.distance(pt) if bassin_poly else float('inf')
+            dist_evit = max(0, pt.distance(evit_pt) - evit_rad) if evit_pt else float('inf')
+            dist_term = term_poly.distance(pt) if term_poly else float('inf')
+            dist_quai = quai_line.distance(pt) if quai_line else float('inf')
+            dist_digue = digue_line.distance(pt) if digue_line else float('inf')
+
             in_bassin = bassin_poly and bassin_poly.contains(pt)
             in_evit = evit_pt and pt.distance(evit_pt) <= evit_rad
+            in_tp = term_poly and term_poly.contains(pt)
             
+            # --- ZONES D'OMBRE DU QUAI ---
+            # Si le point est à l'extérieur du terre-plein, mais que la distance vers le quai 
+            # est la même que la distance vers le terre-plein, alors le point regarde le mur.
+            is_behind_quay = False
+            if quai_line and term_poly and not in_tp:
+                if abs(dist_quai - dist_term) <= max(actual_res * 1.5, 10.0) and dist_term < 150:
+                    is_behind_quay = True
+
+            # 1. Bassin & Évitage (Génèrent des creux)
             if in_bassin: 
                 z_excav = min(z_excav, z_bassin)
                 zone = "Bassin Dragage"
-            elif bassin_poly:
-                z_excav = min(z_excav, z_bassin + (bassin_poly.distance(pt) / slope_ratio))
+            elif bassin_poly and not is_behind_quay: # On ne monte pas un talus de bassin si on est au pied d'un quai
+                z_excav = min(z_excav, z_bassin + (dist_bassin / slope_ratio))
+                if z_excav < z_nat: zone = "Talus Bassin"
                 
             if in_evit: 
                 z_excav = min(z_excav, z_evitage)
                 zone = "Cercle Évitage"
-            elif evit_pt:
-                z_excav = min(z_excav, z_evitage + ((pt.distance(evit_pt) - evit_rad) / slope_ratio))
+            elif evit_pt and not is_behind_quay:
+                z_excav = min(z_excav, z_evitage + (dist_evit / slope_ratio))
+                if z_excav < z_nat: zone = "Talus Évitage"
+                
+            # Au pied du quai, on force la profondeur de dragage (sans talus)
+            if is_behind_quay and not in_tp:
+                target_dredge = z_bassin if bassin_poly else z_chenal
+                z_excav = min(z_excav, target_dredge)
+                zone = "Pied de Quai (Souille)"
                 
             z_final = z_excav 
             
-            # Remblais et Quai (Désactivation des talus)
-            in_tp = term_poly and term_poly.contains(pt)
-            dist_term = term_poly.distance(pt) if term_poly else float('inf')
-            
-            is_behind_quay = False
-            if quai_line and term_poly:
-                # Tolérance mathématique élargie pour "effacer" le talus si on est proche de la ligne dessinée
-                dist_quai = quai_line.distance(pt)
-                if dist_quai <= dist_term + (actual_res * 2.0): 
-                    is_behind_quay = True
-            
+            # 2. Terre-Plein & Talus associés
             if in_tp:
                 z_final = max(z_final, z_terreplein)
                 zone = "Terre-Plein"
@@ -508,14 +500,13 @@ if st.session_state['raw_df'] is not None:
                     z_talus_term = z_terreplein - (dist_term / slope_ratio)
                     if z_talus_term > z_final:
                         z_final = z_talus_term
-                        if "Naturel" in zone or "Talus" in zone: zone = "Talus Terre-Plein"
+                        zone = "Talus Terre-Plein"
                 else:
-                    if z_terreplein > z_final and ("Naturel" in zone or "Talus" in zone): 
+                    if dist_quai <= actual_res:
                         zone = "Mur de Quai (Vertical)"
                         
-            # Digue
+            # 3. Digue (Écrase tout le reste)
             if digue_line:
-                dist_digue = digue_line.distance(pt)
                 if dist_digue < 5: 
                     z_final = max(z_final, z_digue) 
                     zone = "Digue Anti-Houle"
@@ -609,8 +600,7 @@ if st.session_state['raw_df'] is not None:
                         quay_x = q_pts['D'].mean()
 
                 df_s['D'] = df_s['Xc' if axis=='Yc' else 'Yc'].round(0)
-                
-                # CORRECTIF : numeric_only=True pour éviter le TypeError de Pandas avec les chaînes de texte (Zone_Name)
+                # FIX BUGS PANDAS TYPE ERROR: numeric_only=True
                 df_s = df_s.groupby('D').mean(numeric_only=True).reset_index()
                 
                 fig = go.Figure()
