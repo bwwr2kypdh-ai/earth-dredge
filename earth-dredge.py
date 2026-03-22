@@ -139,7 +139,7 @@ forme_opt = st.sidebar.radio("Forme", ["Rectangle", "Triangle Rectangle", "Losan
 auto_angle = st.sidebar.toggle("Rotation Auto", value=True)
 manual_angle = st.sidebar.slider("Angle (°)", 0, 180, 0, disabled=auto_angle)
 yard_margin = st.sidebar.slider("Retrait Périphérique (m)", 0, 50, 5, step=1)
-if st.sidebar.button("🚀 CALCULER FORME IA", type="primary"): st.session_state['trigger_ia'] = True
+if st.sidebar.button("🚀 CALCULER FORME IA", type="primary", width="stretch"): st.session_state['trigger_ia'] = True
 
 st.sidebar.markdown("---") 
 st.sidebar.header("Logistique & Flotte") 
@@ -171,7 +171,7 @@ with col1:
 
 with col2: 
     st.subheader("2. Extraction Data") 
-    if st.button("1️⃣ TÉLÉCHARGER LE MNT", use_container_width=True, type="primary"): 
+    if st.button("1️⃣ TÉLÉCHARGER LE MNT", width="stretch", type="primary"): 
         if input_map_data["all_drawings"]: 
             poly_coords = [d["geometry"]["coordinates"][0] for d in input_map_data["all_drawings"] if d["geometry"]["type"] == "Polygon"][-1]
             with st.spinner("Sondage en cours..."): 
@@ -233,7 +233,7 @@ with col2:
                         st.success("MNT (API) Chargé !")
                         st.rerun()
 
-    if st.button("2️⃣ ACTUALISER LE FILTRE (Local)", use_container_width=True):
+    if st.button("2️⃣ ACTUALISER LE FILTRE (Local)", width="stretch"):
         if st.session_state['master_df'] is not None and input_map_data["all_drawings"]:
             new_poly = Polygon([d["geometry"]["coordinates"][0] for d in input_map_data["all_drawings"] if d["geometry"]["type"] == "Polygon"][-1])
             df_m = st.session_state['master_df'].copy()
@@ -243,7 +243,7 @@ with col2:
             st.success("Filtre appliqué.")
             st.rerun()
 
-    if st.button("🗑️ PURGER TOUT", use_container_width=True):
+    if st.button("🗑️ PURGER TOUT", width="stretch"):
         st.session_state['raw_df'] = st.session_state['master_df'] = None
         st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
         st.rerun()
@@ -254,7 +254,6 @@ with col2:
 if st.session_state['raw_df'] is not None:
     df = st.session_state['raw_df'].copy()
     
-    # Sécurisation des variables de session
     proj = st.session_state.get('proj_info', {})
     c_lat, c_lon = proj.get('center', [43.325, 5.340])
     actual_res = proj.get('res', 10.0)
@@ -293,16 +292,13 @@ if st.session_state['raw_df'] is not None:
             elif g_type == "LineString": d_lines.append(d["geometry"]["coordinates"])
             elif g_type == "Point" and d.get("properties", {}).get("radius"): d_circles.append((d["geometry"]["coordinates"], d["properties"]["radius"]))
 
-    # Application de la logique d'extraction structurée
     term_coords_ll = None
     bassin_coords = None
     
-    # Si la forme IA est active, le 1er polygone dessiné est forcément le bassin
     if st.session_state.get('rect_data', {}).get('coords'):
         term_coords_ll = st.session_state['rect_data']['coords'][0]
         if len(d_polys) > 0: bassin_coords = d_polys[0]
     else:
-        # Sinon, 1er poly = Terre-plein, 2ème poly = Bassin
         if len(d_polys) > 0: term_coords_ll = d_polys[0]
         if len(d_polys) > 1: bassin_coords = d_polys[1]
 
@@ -353,7 +349,7 @@ if st.session_state['raw_df'] is not None:
                                                     best_shape = affinity.rotate(para, angle, origin=centroid, use_radians=False)
                 if best_shape:
                     st.session_state['rect_data'] = {'coords': [[m_to_latlon(x, y) for x, y in best_shape.exterior.coords]], 'area': best_area, 'type': forme_opt}
-                    st.rerun() # Force la mise à jour de la carte avec la forme IA
+                    st.rerun()
 
     best_shape_ll = st.session_state['rect_data']['coords']
     operational_area_m2 = st.session_state['rect_data']['area']
@@ -371,7 +367,6 @@ if st.session_state['raw_df'] is not None:
     if term_poly and not term_poly.is_valid: term_poly = term_poly.buffer(0)
     if bassin_poly and not bassin_poly.is_valid: bassin_poly = bassin_poly.buffer(0)
 
-    # Base de l'eau (Pente intégrée)
     app_slope = design_slope_pct 
     app_az = rotation_offset 
     S_s = app_slope / 100.0 
@@ -407,7 +402,6 @@ if st.session_state['raw_df'] is not None:
 
     df['Z_FGL_Target'] = z_targets
     
-    # Interdiction remblai mer
     if not allow_reclam:
         mask_norec = (df['Z_Ext'] <= df['Z_FGL_Target']) & (df['Z_Ext'] <= 0)
         df['Z_FGL'] = df['Z_FGL_Target'].copy()
@@ -438,11 +432,8 @@ if st.session_state['raw_df'] is not None:
     tot_cut = vol_cut_terre + vol_cut_mer
     tot_fill = vol_fill_terre + vol_fill_sousmer + vol_fill_surmer
 
-    bounds_pts = []
-    # Extration simple des limites pour affichage textuel
-    # (Simplifié pour alléger la boucle principale)
-    if quai_line: bounds_pts.append({'type': 'Quai', 'length': quai_line.length, 'max_h': z_terreplein - z_chenal})
-    if digue_line: bounds_pts.append({'type': 'Digue', 'length': digue_line.length, 'max_h': z_digue - z_chenal})
+    if quai_line: bounds_stats.append({'type': 'Quai', 'length': quai_line.length, 'max_h': z_terreplein - z_chenal})
+    if digue_line: bounds_stats.append({'type': 'Digue', 'length': digue_line.length, 'max_h': z_digue - z_chenal})
 
     # =========================================================================
     # --- RESULTATS & ONGLETS ---
@@ -500,8 +491,8 @@ if st.session_state['raw_df'] is not None:
             return fig
 
         sc1, sc2 = st.columns(2)
-        sc1.plotly_chart(plot_section(df, "Coupe Transversale A-A'", 'Yc'), use_container_width=True)
-        sc2.plotly_chart(plot_section(df, "Coupe Longitudinale B-B'", 'Xc'), use_container_width=True)
+        sc1.plotly_chart(plot_section(df, "Coupe Transversale A-A'", 'Yc'), width="stretch")
+        sc2.plotly_chart(plot_section(df, "Coupe Longitudinale B-B'", 'Xc'), width="stretch")
 
     with t_hydro:
         st.subheader("Hydrologie Urbaine (Loi de Montana)")
@@ -536,7 +527,7 @@ if st.session_state['raw_df'] is not None:
         
         # Trace du projet
         if term_coords_ll: folium.Polygon(locations=term_coords_ll, color='magenta', weight=4, fill=True, fill_opacity=0.2, tooltip="Terre-Plein (IA)").add_to(m_plan)
-        if bassin_coords: folium.Polygon(locations=bassin_coords, color='cyan', weight=3, fill=True, fill_opacity=0.2, dash_array='5,5', tooltip="Bassin de Dragage").add_to(m_plan)
+        if bassin_coords: folium.Polygon(locations=bassin_coords, color='cyan', weight=3, fill=True, fill_opacity=0.2, dash_array='5,5', tooltip="Bassin Dragué").add_to(m_plan)
         if digue_coords: folium.PolyLine(locations=[(lat, lon) for lon, lat in digue_coords], color='red', weight=8, tooltip="Digue").add_to(m_plan)
         if quai_coords: folium.PolyLine(locations=[(lat, lon) for lon, lat in quai_coords], color='black', weight=8, tooltip="Quai").add_to(m_plan)
         
@@ -561,3 +552,24 @@ if st.session_state['raw_df'] is not None:
         except: pass
         
         st_folium(m_plan, width=1200, height=600, key="final_topo")
+        
+    st.markdown("---")
+    st.write("### Exportation des Coordonnées (Pour Google Earth)")
+    col_dl1, col_dl2, col_dl3 = st.columns(3)
+        
+    df_limite = pd.DataFrame([{"Lat": lat, "Lon": lon} for lon, lat in st.session_state['geoms']['poly']])
+    col_dl1.download_button("📥 1. Limite Initiale (CSV)", df_limite.to_csv(index=False).encode('utf-8'), "1_Limite_Initiale.csv", "text/csv", width="stretch")
+        
+    if term_coords_ll:
+        df_magenta = pd.DataFrame([{"Lat": lat, "Lon": lon} for lat, lon in term_coords_ll])
+        col_dl2.download_button("📥 2. Emprise Terre-Plein (CSV)", df_magenta.to_csv(index=False).encode('utf-8'), "2_Emprise_Terre_Plein.csv", "text/csv", width="stretch")
+            
+    if best_shape_ll:
+        df_shape = pd.DataFrame([{"Lat": lat, "Lon": lon} for lat, lon in best_shape_ll[0]])
+        col_dl3.download_button(f"📥 3. {current_shape_type} IA (CSV)", df_shape.to_csv(index=False).encode('utf-8'), f"3_Forme_Optimisee.csv", "text/csv", width="stretch")
+
+    col_pdf1, col_pdf2 = st.columns([4, 1]) 
+    with col_pdf2: 
+        st.caption("💡 Astuce Impression : Cochez 'Graphiques d'arrière-plan'.")
+        if st.button("🖨️ IMPRIMER LE RAPPORT PDF", type="secondary", width="stretch"): 
+            components.html("<script>window.parent.print();</script>", height=0)
