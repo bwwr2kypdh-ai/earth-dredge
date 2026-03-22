@@ -17,52 +17,20 @@ import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 import matplotlib.tri as tri
 
-# =========================================================================
-# --- 1. CONFIGURATION DE LA PAGE ---
-# =========================================================================
-st.set_page_config(layout="wide", page_title="Coastal & Marine Master Planning")
+# --- CONFIGURATION DE LA PAGE --- 
+st.set_page_config(layout="wide", page_title="Terminal Master Planning") 
+st.title("Terminal Master Planning & Earthworks Optimizer") 
 
-# =========================================================================
-# --- 2. SYSTÈME D'AUTHENTIFICATION INFAILLIBLE ---
-# =========================================================================
-if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
-
-if not st.session_state["authenticated"]:
-    st.title("🔒 Accès Sécurisé - Terminal Master Planning")
-    st.markdown("Veuillez entrer votre code d'accès privilégié pour lancer le simulateur d'ingénierie.")
-    
-    with st.form("login_form"):
-        pwd_input = st.text_input("Code d'accès :", type="password")
-        submitted = st.form_submit_button("Se connecter")
-        
-        if submitted:
-            passwords = st.secrets.get("passwords", {"default": "admin"})
-            if pwd_input in passwords.values():
-                st.session_state["authenticated"] = True
-                st.rerun() 
-            else:
-                st.error("Code d'accès incorrect ou expiré. 🛑")
-    st.stop()
-
-
-# =========================================================================
-# --- 3. L'APPLICATION PRINCIPALE ---
-# =========================================================================
-st.title("⚓ Coastal, Marine & Earthworks Optimizer")
-
-if st.sidebar.button("Se déconnecter 🚪"):
-    st.session_state["authenticated"] = False
-    st.rerun()
-
-# Injection CSS (Gestion propre de l'impression)
+# Injection CSS (Gestion de l'impression des onglets SANS transparence)
 st.markdown(""" 
 <style> 
 @media print { 
-    @page { size: A3 landscape; margin: 10mm; }
-    body { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; background-color: white !important; }
-    .stSidebar, header, footer, .stButton, .stSlider, .stSelectbox, .stTextInput, .stRadio, .stToggle, .stDownloadButton, .stFileUploader { display: none !important; } 
+    .stSidebar {display: none !important;} 
+    header {display: none !important;} 
+    footer {display: none !important;} 
+    .stButton {display: none !important;} 
     
+    /* Force l'affichage de TOUS les onglets Streamlit l'un sous l'autre */
     div[data-baseweb="tab-panel"], div[role="tabpanel"], div[hidden] {
         display: block !important;
         visibility: visible !important;
@@ -71,50 +39,45 @@ st.markdown("""
         overflow: visible !important;
         opacity: 1 !important; 
     }
-    div[role="tablist"] { display: none !important; }
+    /* Cache le menu des onglets */
+    div[role="tablist"] {
+        display: none !important;
+    }
+    /* S'assurer que les calques folium ne sont pas transparents à l'impression */
+    .leaflet-layer, .leaflet-pane, .leaflet-tile, .leaflet-tile-loaded, img.leaflet-tile {
+        opacity: 1 !important;
+    }
 } 
 </style> 
 """, unsafe_allow_html=True) 
 
-# --- FONCTION MÉTÉOCÉAN DOMINANTE ---
-def fetch_meteo(lat, lon):
-    try:
-        w_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&past_days=30&hourly=windspeed_10m,winddirection_10m").json()
-        c_res = requests.get(f"https://marine-api.open-meteo.com/v1/marine?latitude={lat}&longitude={lon}&past_days=30&hourly=ocean_current_velocity,ocean_current_direction").json()
-        
-        w_dirs = [d for d in w_res.get('hourly', {}).get('winddirection_10m', []) if d is not None]
-        w_spds = [s for s in w_res.get('hourly', {}).get('windspeed_10m', []) if s is not None]
-        c_dirs = [d for d in c_res.get('hourly', {}).get('ocean_current_direction', []) if d is not None]
-        c_spds = [s for s in c_res.get('hourly', {}).get('ocean_current_velocity', []) if s is not None]
-        
-        def dominant_dir(dirs):
-            if not dirs: return 0
-            rounded = [round(d, -1) % 360 for d in dirs]
-            return max(set(rounded), key=rounded.count)
-        
-        dom_w_dir = dominant_dir(w_dirs)
-        avg_w_spd = sum(w_spds)/len(w_spds) if w_spds else 0
-        dom_c_dir = dominant_dir(c_dirs)
-        avg_c_spd = sum(c_spds)/len(c_spds) if c_spds else 0
-        
-        return {'wind_dir': dom_w_dir, 'wind_spd': round(avg_w_spd, 1), 'curr_dir': dom_c_dir, 'curr_spd': round(avg_c_spd, 2)}
-    except:
-        return {'wind_dir': 0, 'wind_spd': 0, 'curr_dir': 0, 'curr_spd': 0}
-
 # --- MEMOIRE DE SESSION --- 
-if 'raw_df' not in st.session_state: st.session_state['raw_df'] = None 
-if 'master_raw_df' not in st.session_state: st.session_state['master_raw_df'] = None
-if 'geoms' not in st.session_state: st.session_state['geoms'] = {'poly': None} 
-if 'master_geoms' not in st.session_state: st.session_state['master_geoms'] = {'poly': None}
-if 'map_center' not in st.session_state: st.session_state['map_center'] = [43.325, 5.340] 
-if 'last_buffer' not in st.session_state: st.session_state['last_buffer'] = 50 
-if 'rect_data' not in st.session_state: st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
-if 'meteo' not in st.session_state: st.session_state['meteo'] = None
+if 'raw_df' not in st.session_state: 
+    st.session_state['raw_df'] = None 
+if 'geoms' not in st.session_state: 
+    st.session_state['geoms'] = {'poly': None} 
+if 'map_center' not in st.session_state: 
+    st.session_state['map_center'] = [43.2965, 5.3698] 
+if 'last_buffer' not in st.session_state: 
+    st.session_state['last_buffer'] = 50 
+if 'rect_data' not in st.session_state:
+    st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
+
+# --- VALEURS DE SECURITE GLOBALES (Anti-Crash) ---
+area_m2 = 0.0
+current_lost_area = 0.0
+current_bilan = 0.0
+current_deblai = 0.0
+current_remblai = 0.0
+current_m_rem = 0.0
+current_m_deb = 0.0
+s1_deb = s1_rem = s1_bil = s1_m_rem = s1_m_deb = s1_la = 0.0
+s2_deb = s2_rem = s2_bil = s2_m_rem = s2_m_deb = s2_la = 0.0
 
 # --- BARRE LATERALE : RECHERCHE --- 
-st.sidebar.header("Localisation") 
-search_query = st.sidebar.text_input("Port ou coordonnées GPS (ex: 43.32, 5.34)") 
-if st.sidebar.button("Aller à cette position"): 
+st.sidebar.header("Localisation du Projet") 
+search_query = st.sidebar.text_input("Adresse ou coordonnees GPS (ex: 43.29, 5.36)") 
+if st.sidebar.button("Aller a cette position"): 
     if search_query: 
         try: 
             if "," in search_query and any(c.isdigit() for c in search_query): 
@@ -123,34 +86,28 @@ if st.sidebar.button("Aller à cette position"):
             else: 
                 url = f"https://nominatim.openstreetmap.org/search?q={search_query}&format=json&limit=1" 
                 res = requests.get(url, headers={'User-Agent': 'TopoTerminalApp/1.0'}).json() 
-                if res: st.session_state['map_center'] = [float(res[0]['lat']), float(res[0]['lon'])] 
+                if res: 
+                    st.session_state['map_center'] = [float(res[0]['lat']), float(res[0]['lon'])] 
         except: pass 
 
-# --- BARRE LATERALE : API MNT MIXTE --- 
+# --- BARRE LATERALE : API & MNT --- 
 st.sidebar.markdown("---") 
-st.sidebar.header("Source Topo/Bathy") 
-api_choice = st.sidebar.selectbox("Fournisseur de MNT", [
-    "GEBCO 2020 (Mixte Terre/Mer)", 
-    "NOAA ETOPO1 (Mixte)", 
-    "Open-Meteo (Terre uniquement)", 
-    "Google Maps API (Terre uniquement)",
-    "Stormglass.io (Mer uniquement)",
-    "Fichier Local (CSV)"
-]) 
-
+st.sidebar.header("Source Topographique") 
+api_choice = st.sidebar.selectbox("Fournisseur de MNT", ["Open-Meteo", "Google Maps", "Fichier Local (CSV)"]) 
 api_key = ""
 uploaded_mnt = None
-if "Google" in api_choice or "Stormglass" in api_choice: 
-    api_key = st.sidebar.text_input("Clé API", type="password") 
+
+if "Google" in api_choice: 
+    api_key = st.sidebar.text_input("Cle API Google", type="password") 
 elif "Fichier Local" in api_choice:
     uploaded_mnt = st.sidebar.file_uploader("Importer MNT (CSV/TXT)", type=['csv', 'txt'])
-    st.sidebar.caption("Colonnes attendues: Lat (ou Y), Lon (ou X), Z (ou Ext)")
+    st.sidebar.caption("Colonnes attendues: Lat (ou Y), Lon (ou X), Z")
 
 # --- BARRE LATERALE : PILOTES IA --- 
 st.sidebar.markdown("---") 
-st.sidebar.header("Conception du Projet (Cotes)") 
+st.sidebar.header("Modelisation & Pilotes Optimisation") 
 
-ai_z = st.sidebar.toggle("Pilote Auto : Altitude/Profondeur (Z)", value=False) 
+ai_z = st.sidebar.toggle("Pilote Auto : Altitude (Z)", value=True) 
 if ai_z: 
     ai_objective = st.sidebar.radio("Objectif d'Optimisation Altitudinale", [ 
         "Zero-Balance (Equilibre Deblai/Remblai)",  
@@ -158,111 +115,111 @@ if ai_z:
     ]) 
     target_elevation = 0.0  
 else: 
-    target_elevation = st.sidebar.number_input("Cote Cible Finie (m MSL)", value=2.5, step=0.5, help="Valeur positive pour un terre-plein (Terre), négative pour un chenal (Mer).") 
+    target_elevation = st.sidebar.number_input("Elevation Cible Finie (m MSL)", value=50.0, step=0.5) 
     ai_objective = "Manuel" 
 
-ai_dir = st.sidebar.toggle("Pilote Auto : Direction de Pente", value=True) 
+ai_dir = st.sidebar.toggle("Pilote Auto : Direction d'Ecoulement", value=True) 
 if ai_dir: 
-    min_ai_slope = st.sidebar.number_input("Pente Minimale Autorisee (%)", value=0.0, step=0.1) 
+    min_ai_slope = st.sidebar.number_input("Pente Minimale Autorisee (%)", value=1.2, step=0.1) 
     design_slope_pct = 0.0 
 else: 
-    design_slope_pct = st.sidebar.number_input("Pente Manuelle (%)", value=0.0, step=0.1) 
+    design_slope_pct = st.sidebar.number_input("Pente Manuelle (%)", value=1.5, step=0.1) 
     min_ai_slope = 0.0 
 
-type_plateforme = st.sidebar.radio("Typologie de Profil", ["Plate / Souille", "Simple Pente", "Double Pente"]) 
-rotation_offset = st.sidebar.slider("Rotation Axe de Pente (°)", -180, 180, 0, step=1) 
-z_offset = st.sidebar.number_input("Surprofondeur/Ajustement (m)", value=0.00, step=0.10, format="%.2f") 
-
-allow_reclamation = st.sidebar.toggle("Autoriser le Remblaiement/Réclamation", value=True, help="Si désactivé, l'IA ne comblera pas les trous (Remblai = 0).")
+type_plateforme = st.sidebar.radio("Typologie de Surface", ["Simple Pente", "Double Pente (Faitage)", "Plate"]) 
+rotation_offset = st.sidebar.slider("Rotation Axe d'Ecoulement (°)", -180, 180, 0, step=1) 
+z_offset = st.sidebar.number_input("Ajustement Altitudinal Manuel (m)", value=0.00, step=0.10, format="%.2f") 
 
 # --- BARRE LATERALE : GENIE CIVIL & GEOTECHNIQUE --- 
 st.sidebar.markdown("---") 
-st.sidebar.header("Géotechnique & Talus") 
+st.sidebar.header("Geotechnique & Arbitrage Frontieres") 
 soil_types = { 
-    "Rocher Massif (Déroctage) (1:1)": 1.0, 
-    "Rocher Fracturé / Corail (1:1.5)": 1.5, 
-    "Argile Raide / Marne (1:2)": 2.0, 
-    "Sable / Sol Standard (1:3)": 3.0, 
-    "Vase / Argile Molle (1:4)": 4.0, 
-    "Fonds très saturés (1:5)": 5.0 
+    "Rocher Sain (1:1)": 1.0, 
+    "Sable/Gravier Dense (1:1.5)": 1.5, 
+    "Argile Raide / Limon (1:2)": 2.0, 
+    "Sol Meuble Standard (1:3)": 3.0, 
+    "Sol Meuble Faible (1:4)": 4.0, 
+    "Vases / Sols Satures (1:5)": 5.0 
 } 
-soil_choice = st.sidebar.selectbox("Nature des Fonds/Sol (Pente)", list(soil_types.keys()), index=3) 
+soil_choice = st.sidebar.selectbox("Nature du Sol (Pente de Base)", list(soil_types.keys()), index=4) 
 base_slope_ratio = soil_types[soil_choice] 
 
-fos = st.sidebar.number_input("Facteur de Sécurité (FoS)", min_value=1.0, max_value=3.0, value=1.2, step=0.1) 
+fos = st.sidebar.number_input("Facteur de Securite (FoS)", min_value=1.0, max_value=3.0, value=1.2, step=0.1) 
 slope_ratio = base_slope_ratio * fos 
 
-max_slope_height = st.sidebar.number_input("Hauteur Max avant Mur/Quai (m)", value=15.0, step=1.0) 
-pavement_thickness = st.sidebar.number_input("Épaisseur Chaussée / Tolérance (cm)", 0, 200, 50, step=10) / 100.0 
-buffer_size = st.sidebar.slider("Débord d'Étude Raccordements (m)", 0, 500, 100, step=25) 
-user_grid_res = st.sidebar.number_input("Maillage d'Analyse (m)", value=10.0, step=1.0) 
+max_slope_height = st.sidebar.number_input("Hauteur Max Talus avant Mur (m)", value=2.0, step=0.5) 
+pavement_thickness = st.sidebar.number_input("Epaisseur de Chaussee (cm)", 0, 200, 60, step=5) / 100.0 
+buffer_size = st.sidebar.slider("Debord d'Etude Raccordements (m)", 0, 200, 50, step=10) 
+user_grid_res = st.sidebar.number_input("Maillage d'Analyse (m)", value=7.0, step=1.0) 
 
 # --- BARRE LATERALE : OPTIMISATION FONCIER --- 
 st.sidebar.markdown("---") 
 st.sidebar.header("Optimisation Foncier") 
-forme_optimisation = st.sidebar.radio("Forme à inscrire", ["Rectangle", "Triangle Rectangle", "Losange (Parallélogramme)"])
+forme_optimisation = st.sidebar.radio("Forme à optimiser", ["Rectangle", "Triangle Rectangle", "Losange (Parallélogramme)"])
 
 auto_angle = st.sidebar.toggle("Rotation Automatique (IA)", value=True)
 manual_angle = st.sidebar.slider("Forcer l'angle (°)", 0, 180, 0, step=1, disabled=auto_angle)
-yard_margin = st.sidebar.slider("Retrait de sécurité (m)", 0, 50, 5, step=1) 
+yard_margin = st.sidebar.slider("Retrait de securite peripherique (m)", 0, 50, 5, step=1) 
 
 col_opt1, col_opt2 = st.sidebar.columns(2)
-if col_opt1.button("🚀 CALCULER", type="primary", use_container_width=True): st.session_state['trigger_rect_calc'] = True
-if col_opt2.button("🗑️ EFFACER", use_container_width=True): st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
+if col_opt1.button("🚀 CALCULER LA FORME", type="primary", use_container_width=True):
+    st.session_state['trigger_rect_calc'] = True
+if col_opt2.button("🗑️ EFFACER", use_container_width=True):
+    st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
 
 # --- BARRE LATERALE : LOGISTIQUE --- 
 st.sidebar.markdown("---") 
-st.sidebar.header("Logistique & Production") 
+st.sidebar.header("Dimensionnement Logistique") 
 equip_ratios = { 
-    "TSHD (Drague Aspiratrice)": {"prod": 2500, "type": "Sea"}, 
-    "CSD (Drague Désagrégateur)": {"prod": 1500, "type": "Sea"}, 
-    "Excavatrices (Terre)": {"prod": 400, "type": "Land"}, 
-    "Scrapers/Niveleuses": {"prod": 600, "type": "Land"} 
+    "Reach Stacker (RS)": {"ratio": 30, "mph": 20}, 
+    "Straddle Carrier (SC)": {"ratio": 15, "mph": 18}, 
+    "Forklift (FL)": {"ratio": 15, "mph": 25}, 
+    "RTG / ECH": {"ratio": 9, "mph": 30} 
 } 
-selected_equip = st.sidebar.selectbox("Flotte Principale", list(equip_ratios.keys())) 
-prod_m3_h = equip_ratios[selected_equip]["prod"] 
+selected_equip = st.sidebar.selectbox("Systeme de Manutention", list(equip_ratios.keys())) 
+ratio_m2_teu = equip_ratios[selected_equip]["ratio"] 
+equip_mph = equip_ratios[selected_equip]["mph"] 
 
-target_days = st.sidebar.number_input("Durée Cible du Chantier (Jours)", value=120) 
-hours_per_day = st.sidebar.slider("Heures Opérationnelles / Jour", 1, 24, 20)
-efficiency_rate = st.sidebar.slider("Taux d'Efficacité (Météo/Pannes) (%)", 10, 100, 75) / 100.0
+target_annual_teu = st.sidebar.number_input("Trafic Annuel (TEU)", value=100000, min_value=1) 
+dwell_time = st.sidebar.number_input("Temps de Sejour (Jours)", value=7, min_value=1) 
+util_rate = st.sidebar.slider("Taux de Remplissage (%)", 10, 100, 75) / 100.0 
+
+st.sidebar.subheader("Cinematique") 
+moves_per_teu = st.sidebar.number_input("Mouvements par TEU", value=2.0, step=0.5) 
+shifts_per_day = st.sidebar.number_input("Shifts par Jour", value=2, min_value=1, max_value=3) 
+hours_per_shift = st.sidebar.number_input("Heures par Shift", value=8, min_value=1, max_value=12) 
+working_days = st.sidebar.number_input("Jours Ouvres par An", value=360, min_value=1, max_value=365) 
+admin_sqm = st.sidebar.number_input("Superficie Batiments (m2)", value=1500, min_value=0) 
+lane_cap = st.sidebar.number_input("Capacite / Voie Gate", value=25000, min_value=1) # Anti ZeroDivisionError
 
 # --- CARTE DE SAISIE --- 
-m = folium.Map(location=st.session_state['map_center'], zoom_start=15,  
-               tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri') 
+m = folium.Map(location=st.session_state['map_center'], zoom_start=16,  
+               tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
+               attr='Esri') 
 Draw(export=True, draw_options={'polyline':False, 'polygon':True, 'rectangle':False, 'circle':False, 'marker':False}).add_to(m) 
-
-if st.session_state.get('master_geoms') and st.session_state['master_geoms'].get('poly'):
-    m_poly = st.session_state['master_geoms']['poly']
-    sw_input = [min(p[1] for p in m_poly), min(p[0] for p in m_poly)]
-    ne_input = [max(p[1] for p in m_poly), max(p[0] for p in m_poly)]
-    m.fit_bounds([sw_input, ne_input])
 
 col1, col2 = st.columns([2, 1]) 
 
 with col1: 
-    st.subheader("1. Délimitation du Périmètre Mixte") 
-    st.caption("Tracez votre zone d'étude (terre et/ou mer).")
-    output = st_folium(m, width="100%", height=600, key="input_map") 
+    st.subheader("1. Delimitation du Perimetre") 
+    st.caption("Pour modifier/réduire la zone d'étude, supprimez l'ancien polygone, dessinez le nouveau et re-cliquez sur Actualiser.")
+    output = st_folium(m, width=800, height=600, key="input_map") 
 
 with col2: 
-    st.subheader("2. Gestion Topo/Bathy & Calculs") 
+    st.subheader("2. Gestion du MNT & Calculs") 
     
-    if st.button("1️⃣ TÉLÉCHARGER LE MNT/LEVÉ (API)", use_container_width=True, type="primary"): 
+    if st.button("1️⃣ TÉLÉCHARGER LE MNT (API / Fichier)", use_container_width=True, type="primary"): 
         poly_coords = None 
         if output["all_drawings"]: 
             polys = [d for d in output["all_drawings"] if d["geometry"]["type"] == "Polygon"]
             if polys: poly_coords = polys[-1]["geometry"]["coordinates"][0] 
          
         if poly_coords: 
-            with st.spinner("Acquisition des données mixtes en cours..."): 
+            with st.spinner("Acquisition des donnees en cours..."): 
                 poly = Polygon(poly_coords) 
                 c_lat = (poly.bounds[1] + poly.bounds[3]) / 2 
-                c_lon = (poly.bounds[0] + poly.bounds[2]) / 2
-                
-                # Fetch météo locale
-                st.session_state['meteo'] = fetch_meteo(c_lat, c_lon)
-                
                 buffered_poly = poly.buffer(buffer_size / 111000) if buffer_size > 0 else poly 
+                 
                 min_lon, min_lat, max_lon, max_lat = buffered_poly.bounds 
                 area_m2 = poly.area * (111000**2) * math.cos(math.radians(c_lat)) 
                 actual_res = user_grid_res if (area_m2 / (user_grid_res**2)) < 1500 else math.ceil(math.sqrt(area_m2 / 1500)) 
@@ -272,7 +229,7 @@ with col2:
                         local_df = pd.read_csv(uploaded_mnt)
                         lat_col = next((c for c in local_df.columns if c.lower() in ['lat', 'y', 'latitude']), None)
                         lon_col = next((c for c in local_df.columns if c.lower() in ['lon', 'x', 'longitude']), None)
-                        z_col = next((c for c in local_df.columns if c.lower() in ['z', 'alt', 'elevation', 'elevation_m', 'z_ext']), None)
+                        z_col = next((c for c in local_df.columns if c.lower() in ['z', 'alt', 'elevation', 'elevation_m']), None)
                         
                         if lat_col and lon_col and z_col:
                             filtered_pts = []
@@ -283,15 +240,12 @@ with col2:
                                         'Lat': row[lat_col], 'Lon': row[lon_col], 'Z_Ext': row[z_col], 'In_Project': poly.contains(pt)
                                     })
                             if filtered_pts:
-                                new_df = pd.DataFrame(filtered_pts)
-                                st.session_state['raw_df'] = new_df
-                                st.session_state['master_raw_df'] = new_df.copy()
+                                st.session_state['raw_df'] = pd.DataFrame(filtered_pts)
                                 st.session_state['geoms'] = {'poly': poly_coords}
-                                st.session_state['master_geoms'] = {'poly': poly_coords}
-                                st.session_state['proj_info'] = {'area_m2': area_m2, 'center': [c_lat, c_lon], 'res': actual_res}
+                                st.session_state['proj_info'] = {'area_m2': area_m2, 'center': [c_lat, (poly.bounds[0]+poly.bounds[2])/2], 'res': actual_res}
                                 st.session_state['last_buffer'] = buffer_size
                                 st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
-                                st.success("Levé Local extrait et recadré avec succès.")
+                                st.success("MNT Local extrait et recadré avec succès.")
                             else:
                                 st.error("Aucun point de votre fichier ne correspond au polygone dessiné.")
                         else:
@@ -315,60 +269,40 @@ with col2:
                         chunk = valid_pts[i:i+50] 
                         chunk_flags = in_project_flags[i:i+50] 
                         lats, lons = [p[0] for p in chunk], [p[1] for p in chunk] 
-                        
                         try: 
-                            locs = "|".join([f"{lt},{ln}" for lt,ln in zip(lats,lons)]) 
-                            
                             if "Google" in api_choice: 
                                 clean_key = api_key.strip() 
+                                locs = "|".join([f"{lt},{ln}" for lt,ln in zip(lats,lons)]) 
                                 r = requests.get(f"https://maps.googleapis.com/maps/api/elevation/json?locations={locs}&key={clean_key}").json() 
                                 if r.get('status') == 'OK': elevs.extend([res['elevation'] for res in r['results']]) 
-                            elif "Open-Meteo" in api_choice: 
+                            else: 
                                 r = requests.get("https://api.open-meteo.com/v1/elevation", params={"latitude": ",".join(map(str, lats)), "longitude": ",".join(map(str, lons))}).json() 
                                 elevs.extend(r['elevation']) 
-                            elif "GEBCO" in api_choice or "ETOPO1" in api_choice:
-                                api_url = "gebco2020" if "GEBCO" in api_choice else "etopo1"
-                                r = requests.get(f"https://api.opentopodata.org/v1/{api_url}?locations={locs}").json()
-                                if 'results' in r: elevs.extend([res['elevation'] for res in r['results']])
-                                time.sleep(1.1) # Rate limit OpenTopoData
-                            elif "Stormglass" in api_choice:
-                                if not api_key and i == 0: st.toast("Clé Stormglass absente. Repli sur GEBCO.", icon="⚠️")
-                                if not api_key:
-                                    r = requests.get(f"https://api.opentopodata.org/v1/gebco2020?locations={locs}").json()
-                                    if 'results' in r: elevs.extend([res['elevation'] for res in r['results']])
-                                    time.sleep(1.1)
-                                else:
-                                    for lt, ln in zip(lats, lons):
-                                        r = requests.get(f"https://api.stormglass.io/v2/elevation/point?lat={lt}&lng={ln}", headers={"Authorization": api_key}).json()
-                                        elevs.append(r['data']['elevation'] if 'data' in r else 0.0)
-                                        
                             successful_pts.extend(chunk) 
                             successful_flags.extend(chunk_flags) 
                         except: pass 
+                        time.sleep(0.1) 
                      
                     if elevs: 
-                        new_df = pd.DataFrame({'Lat': [p[0] for p in successful_pts], 'Lon': [p[1] for p in successful_pts], 'Z_Ext': elevs, 'In_Project': successful_flags})
-                        st.session_state['raw_df'] = new_df
-                        st.session_state['master_raw_df'] = new_df.copy()
-                        st.session_state['geoms'] = {'poly': poly_coords}
-                        st.session_state['master_geoms'] = {'poly': poly_coords}
-                        st.session_state['proj_info'] = {'area_m2': area_m2, 'center': [c_lat, c_lon], 'res': actual_res}
-                        st.session_state['last_buffer'] = buffer_size
+                        st.session_state['raw_df'] = pd.DataFrame({'Lat': [p[0] for p in successful_pts], 'Lon': [p[1] for p in successful_pts], 'Z_Ext': elevs, 'In_Project': successful_flags}) 
+                        st.session_state['geoms'] = {'poly': poly_coords} 
+                        st.session_state['proj_info'] = {'area_m2': area_m2, 'center': [c_lat, (poly.bounds[0]+poly.bounds[2])/2], 'res': actual_res} 
+                        st.session_state['last_buffer'] = buffer_size 
                         st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
-                        st.success("Données topographiques/bathymétriques enregistrées.") 
+                        st.success("MNT (API) téléchargé et enregistré.") 
 
-    if st.button("2️⃣ ACTUALISER LE FILTRE ZONE (Local)", use_container_width=True):
-        if st.session_state['master_raw_df'] is not None:
+    if st.button("2️⃣ ACTUALISER LA ZONE D'ÉTUDE (Locale)", use_container_width=True):
+        if st.session_state['raw_df'] is not None:
             if output["all_drawings"]:
                 polys = [d for d in output["all_drawings"] if d["geometry"]["type"] == "Polygon"]
                 if polys:
                     new_poly_coords = polys[-1]["geometry"]["coordinates"][0]
                     new_poly = Polygon(new_poly_coords)
                     
-                    df_master = st.session_state['master_raw_df'].copy()
-                    df_master['In_Project'] = df_master.apply(lambda r: new_poly.contains(Point(r['Lon'], r['Lat'])), axis=1)
+                    st.session_state['raw_df']['In_Project'] = st.session_state['raw_df'].apply(
+                        lambda r: new_poly.contains(Point(r['Lon'], r['Lat'])), axis=1
+                    )
                     
-                    st.session_state['raw_df'] = df_master
                     st.session_state['geoms']['poly'] = new_poly_coords
                     c_lat = (new_poly.bounds[1] + new_poly.bounds[3]) / 2 
                     new_area = new_poly.area * (111000**2) * math.cos(math.radians(c_lat))
@@ -376,27 +310,27 @@ with col2:
                     st.session_state['proj_info']['area_m2'] = new_area
                     st.session_state['proj_info']['center'] = [c_lat, (new_poly.bounds[0]+new_poly.bounds[2])/2]
                     st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
-                    st.success("Zone d'étude restreinte localement avec succès !")
+                    st.success("Zone d'étude actualisée avec succès !")
             else:
-                st.warning("Dessinez d'abord un nouveau polygone restrictif sur la carte.")
+                st.warning("Dessinez d'abord un nouveau polygone sur la carte.")
         else:
-            st.error("Aucun MNT/Levé en mémoire mère.")
+            st.error("Aucun MNT en mémoire.")
 
     col_btn1, col_btn2 = st.columns(2)
-    if col_btn1.button("REVENIR AU MASTER", use_container_width=True):
-        if st.session_state['master_raw_df'] is not None:
-            st.session_state['raw_df'] = st.session_state['master_raw_df'].copy()
-            st.session_state['geoms'] = st.session_state['master_geoms'].copy()
-            st.rerun()
-            
-    if st.session_state['master_raw_df'] is not None:
-        mnt_csv = st.session_state['master_raw_df'][['Lat', 'Lon', 'Z_Ext']].to_csv(index=False).encode('utf-8')
-        col_btn2.download_button("📥 SAUVER LEVÉ BRUT (CSV)", data=mnt_csv, file_name="topo_bathy_master.csv", mime="text/csv", use_container_width=True)
+    if col_btn1.button("PURGER LA MEMOIRE", use_container_width=True): 
+        st.session_state['raw_df'] = None 
+        st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
+        st.rerun() 
+        
+    if st.session_state['raw_df'] is not None:
+        mnt_csv = st.session_state['raw_df'][['Lat', 'Lon', 'Z_Ext']].to_csv(index=False).encode('utf-8')
+        col_btn2.download_button("📥 TÉLÉCHARGER LE MNT (CSV)", data=mnt_csv, file_name="mnt_projet.csv", mime="text/csv", use_container_width=True)
 
 # --- MOTEUR DE CALCULS & GENERATION --- 
+# Tout le code suivant est strictement enfermé dans le bloc MNT pour éviter tout plantage NameError
 if st.session_state['raw_df'] is not None: 
     if not st.session_state['raw_df']['In_Project'].any():
-        st.error("⚠️ Le polygone dessiné ne contient aucun point. Élargissez-le ou revenez au Master.")
+        st.error("⚠️ Le polygone dessiné ne contient aucun point. Redessinez-le.")
         st.stop()
 
     df = st.session_state['raw_df'].copy() 
@@ -424,8 +358,8 @@ if st.session_state['raw_df'] is not None:
         S_s = app_slope / 100.0 
         ux_s, uy_s = math.sin(math.radians(app_az)), math.cos(math.radians(app_az)) 
 
-        if "Plate" in type_plateforme: z_sh = 0.0 
-        elif "Simple Pente" in type_plateforme: z_sh = -S_s * (df_s['X'] * ux_s + df_s['Y'] * uy_s) 
+        if type_plateforme == "Plate": z_sh = 0.0 
+        elif type_plateforme == "Simple Pente": z_sh = -S_s * (df_s['X'] * ux_s + df_s['Y'] * uy_s) 
         else: z_sh = -S_s * abs(df_s['X'] * ux_s + df_s['Y'] * uy_s) 
         df_s['Z_shape'] = z_sh 
 
@@ -437,48 +371,15 @@ if st.session_state['raw_df'] is not None:
         else: C_s = tgt_z 
 
         C_s += z_offset 
-        df_s['Z_FGL_Target'] = df_s['Z_shape'] + C_s 
-        
-        # Application de l'autorisation de remblai (Reclamation)
-        if not allow_reclamation:
-            mask_deep = df_s['Z_Ext'] <= df_s['Z_FGL_Target']
-            df_s['Z_FGL'] = df_s['Z_FGL_Target'].copy()
-            df_s.loc[mask_deep, 'Z_FGL'] = df_s.loc[mask_deep, 'Z_Ext']
-            
-            df_s['Z_Sub'] = df_s['Z_FGL'] - p_thick
-            df_s.loc[mask_deep, 'Z_Sub'] = df_s.loc[mask_deep, 'Z_Ext'] 
-        else:
-            df_s['Z_FGL'] = df_s['Z_FGL_Target']
-            df_s['Z_Sub'] = df_s['Z_FGL'] - p_thick
-
+        df_s['Z_FGL'] = df_s['Z_shape'] + C_s 
+        df_s['Z_Sub'] = df_s['Z_FGL'] - p_thick 
         df_s['Diff_Earth'] = df_s['Z_Sub'] - df_s['Z_Ext'] 
          
         df_p_out = df_s[df_s['In_Project']] 
-        
-        # ---> VENTILATION EXPERTE DES VOLUMES TERRE / MER <---
-        is_land = df_p_out['Z_Ext'] > 0
-        is_sea = df_p_out['Z_Ext'] <= 0
-        is_cut = df_p_out['Diff_Earth'] < 0
-        is_fill = df_p_out['Diff_Earth'] > 0
-
-        # Déblais (Excavation)
-        vol_deblai_terre = abs(df_p_out[is_land & is_cut]['Diff_Earth'].sum()) * (actual_res**2)
-        vol_dragage_mer = abs(df_p_out[is_sea & is_cut]['Diff_Earth'].sum()) * (actual_res**2)
-        total_cut = vol_deblai_terre + vol_dragage_mer
-
-        # Remblais (Fill)
-        vol_remblai_terre = df_p_out[is_land & is_fill]['Diff_Earth'].sum() * (actual_res**2)
-        
-        sea_fill_df = df_p_out[is_sea & is_fill]
-        # Remblai sous-marin (du fond Z_ext jusqu'à min(Z_sub, 0))
-        vol_remblai_sousmer = (np.minimum(sea_fill_df['Z_Sub'], 0) - sea_fill_df['Z_Ext']).sum() * (actual_res**2)
-        # Remblai sur mer (de 0 jusqu'à Z_sub, si Z_sub est positif)
-        vol_remblai_surmer = np.maximum(sea_fill_df['Z_Sub'], 0).sum() * (actual_res**2)
-        
-        total_fill = vol_remblai_terre + vol_remblai_sousmer + vol_remblai_surmer
-        bilan = total_cut + total_fill # Formule basique (négatif + positif)
-        # --------------------------------------------------------
-
+        deblai = df_p_out[df_p_out['Diff_Earth'] < 0]['Diff_Earth'].sum() * (actual_res**2) 
+        remblai = df_p_out[df_p_out['Diff_Earth'] > 0]['Diff_Earth'].sum() * (actual_res**2) 
+        bilan = deblai + remblai 
+         
         poly_coords_m = [to_m(lon, lat) for lon, lat in st.session_state['geoms']['poly']] 
         perim_line = LinearRing(poly_coords_m) 
         max_mur_rem, max_mur_deb, lost_area = 0.0, 0.0, 0.0 
@@ -487,22 +388,21 @@ if st.session_state['raw_df'] is not None:
             pt = perim_line.interpolate(d) 
             idx_min = ((df_s['X'] - pt.x)**2 + (df_s['Y'] - pt.y)**2).idxmin() 
             z_e = df_s.loc[idx_min, 'Z_Ext'] 
-            z_target = df_s.loc[idx_min, 'Z_FGL_Target']
-            dz = z_target - z_e 
-            
-            if not allow_reclamation and dz > 0: continue
-            
+            if type_plateforme == "Plate": zs = 0.0 
+            elif type_plateforme == "Simple Pente": zs = -S_s * (pt.x * ux_s + pt.y * uy_s) 
+            else: zs = -S_s * abs(pt.x * ux_s + pt.y * uy_s) 
+            dz = (zs + C_s) - z_e 
             if abs(dz) > 0.2: 
                 if abs(dz) > max_slope_height: 
                     if dz > max_mur_rem: max_mur_rem = dz 
                     if dz < max_mur_deb: max_mur_deb = dz 
                 else: lost_area += (abs(dz) * slope_ratio) * actual_res 
              
-        return df_s, app_slope, app_az, C_s, total_cut, total_fill, vol_deblai_terre, vol_dragage_mer, vol_remblai_terre, vol_remblai_sousmer, vol_remblai_surmer, max_mur_rem, abs(max_mur_deb), lost_area 
+        return df_s, app_slope, app_az, C_s, deblai, remblai, bilan, max_mur_rem, abs(max_mur_deb), lost_area 
 
-    df, applied_slope_pct, applied_azimuth, C, current_cut, current_fill, c_deb_terre, c_drag_mer, c_rem_terre, c_rem_sous, c_rem_sur, current_m_rem, current_m_deb, current_lost_area = compute_scenario(df, ai_z, ai_objective, pavement_thickness, target_elevation) 
-    _, _, _, _, s1_c, s1_f, _,_,_,_,_, s1_m_rem, s1_m_deb, s1_la = compute_scenario(df, True, "Zero-Balance (Equilibre Deblai/Remblai)", pavement_thickness, target_elevation) 
-    _, _, _, _, s2_c, s2_f, _,_,_,_,_, s2_m_rem, s2_m_deb, s2_la = compute_scenario(df, True, "Raccordement (Alignement aux Frontieres)", pavement_thickness, target_elevation) 
+    df, applied_slope_pct, applied_azimuth, C, current_deblai, current_remblai, current_bilan, current_m_rem, current_m_deb, current_lost_area = compute_scenario(df, ai_z, ai_objective, pavement_thickness, target_elevation) 
+    _, _, _, _, s1_deb, s1_rem, s1_bil, s1_m_rem, s1_m_deb, s1_la = compute_scenario(df, True, "Zero-Balance (Equilibre Deblai/Remblai)", pavement_thickness, target_elevation) 
+    _, _, _, _, s2_deb, s2_rem, s2_bil, s2_m_rem, s2_m_deb, s2_la = compute_scenario(df, True, "Raccordement (Alignement aux Frontieres)", pavement_thickness, target_elevation) 
 
     # EMPRISE UTILE NETTE (MAGENTA)
     poly_coords_m = [to_m(lon, lat) for lon, lat in st.session_state['geoms']['poly']] 
@@ -529,24 +429,25 @@ if st.session_state['raw_df'] is not None:
 
         idx_min = ((df['X'] - pt.x)**2 + (df['Y'] - pt.y)**2).idxmin() 
         z_ext = df.loc[idx_min, 'Z_Ext'] 
-        z_target = df.loc[idx_min, 'Z_FGL_Target'] 
-        dz = z_target - z_ext 
+        if type_plateforme == "Plate": z_sh = 0.0 
+        elif type_plateforme == "Simple Pente": z_sh = -S_calc * (pt.x * ux_c + pt.y * uy_c) 
+        else: z_sh = -S_calc * abs(pt.x * ux_c + pt.y * uy_c) 
+         
+        dz = (z_sh + C) - z_ext 
         t = "Raccordement_Parfait" 
         width = 0.0 
-        
-        if not allow_reclamation and dz > 0: dz = 0
          
         if abs(dz) > 0.2: 
             if abs(dz) > max_slope_height: 
-                t = "Soutenement / Quai" if dz > 0 else "Paroi Deroctage / Mur" 
+                t = "Mur_Remblai" if dz > 0 else "Mur_Deblai" 
                 talus_buffers.append(Point(pt.x, pt.y).buffer(0.5))
             else: 
-                t = "Talus Remblai" if dz > 0 else "Talus Dragage" 
+                t = "Talus_Remblai" if dz > 0 else "Talus_Deblai" 
                 width = abs(dz) * slope_ratio 
                 talus_buffers.append(Point(pt.x, pt.y).buffer(width))
                  
         plat, plon = m_to_latlon(pt.x, pt.y) 
-        if abs(dz) > 0.2: bounds_pts.append({'Lat': plat, 'Lon': plon, 'dZ': dz, 'Type': t, 'Width': width}) 
+        bounds_pts.append({'Lat': plat, 'Lon': plon, 'dZ': dz, 'Type': t, 'Width': width}) 
          
     if talus_buffers:
         talus_footprint = unary_union(talus_buffers)
@@ -635,14 +536,16 @@ if st.session_state['raw_df'] is not None:
         best_area = 0
         centroid = (poly.centroid.x, poly.centroid.y)
         angles_to_test = range(0, 180, 10) if is_auto else [man_angle]
-        shear_angles = range(-45, 46, 15) 
+        shear_angles = range(-45, 46, 15) # Test de cisaillement pour le losange
             
         for angle in angles_to_test:
             rot_poly = affinity.rotate(poly, -angle, origin=centroid, use_radians=False)
             
             for shear in shear_angles:
+                # Contre-cisaillement pour trouver une boîte inscrite
                 skewed_poly = affinity.skew(rot_poly, xs=-shear, origin=centroid)
                 minx, miny, maxx, maxy = skewed_poly.bounds
+                
                 xs = np.linspace(minx, maxx, 15)
                 ys = np.linspace(miny, maxy, 15)
                 
@@ -658,18 +561,20 @@ if st.session_state['raw_df'] is not None:
                                     cand = box(xs[i], ys[k], xs[j], ys[l])
                                     if cand.within(skewed_poly):
                                         best_area = area
+                                        # Recréer le losange (cisaillement inverse puis rotation)
                                         para = affinity.skew(cand, xs=shear, origin=centroid)
                                         best_para = affinity.rotate(para, angle, origin=centroid, use_radians=False)
                                         break
                                 else: break
         return best_para, best_area
 
+    # Exécution via le bouton de la Sidebar
     if st.session_state.get('trigger_rect_calc', False):
         st.session_state['trigger_rect_calc'] = False
         if inner_poly_shp and not inner_poly_shp.is_empty:
             core_poly = inner_poly_shp.buffer(-yard_margin)
             if not core_poly.is_empty:
-                with st.spinner(f"Calcul IA ({forme_optimisation}) en cours..."):
+                with st.spinner(f"Calcul IA : {forme_optimisation} optimal..."):
                     if forme_optimisation == "Rectangle":
                         final_shape, final_area = get_max_inscribed_rect_robust(core_poly, auto_angle, manual_angle)
                     elif forme_optimisation == "Triangle Rectangle":
@@ -708,113 +613,133 @@ if st.session_state['raw_df'] is not None:
             avg_w = sum([p['Width'] for p in pts])/len(pts) 
             bounds_stats.append({'type': seg['type'], 'length': length, 'max_h': max(dzs), 'avg_w': avg_w, 'coords': [(p['Lat'], p['Lon']) for p in pts]}) 
 
+    # --- CSV EXPORT --- 
+    poly_export = [] 
+    for i, (lon, lat) in enumerate(st.session_state['geoms']['poly']): 
+        poly_export.append({"Nom_Polygone": "1_Limite_Etude", "Latitude": lat, "Longitude": lon, "Ordre": i+1}) 
+    if inner_polygon_pts: 
+        for i, (lat, lon) in enumerate(inner_polygon_pts): 
+            poly_export.append({"Nom_Polygone": "2_Emprise_Magenta", "Latitude": lat, "Longitude": lon, "Ordre": i+1}) 
+    if best_shape_ll:
+        for i, (lat, lon) in enumerate(best_shape_ll[0]):
+            poly_export.append({"Nom_Polygone": f"3_{current_shape_type}_Jaune", "Latitude": lat, "Longitude": lon, "Ordre": i+1})
+
+    csv_export = pd.DataFrame(poly_export).to_csv(index=False).encode('utf-8') 
+
+    col_pdf1, col_pdf2 = st.columns([4, 1]) 
+    with col_pdf2: 
+        st.caption("💡 Astuce Impression : Cochez 'Graphiques d'arrière-plan'.")
+        if st.button("🖨️ IMPRIMER LE RAPPORT PDF", type="secondary", use_container_width=True): 
+            components.html("<script>window.parent.print();</script>", height=0) 
+
     # ========================================================= 
-    # ONGLETS DE RESULTATS (3 ONGLETS)
+    # ONGLETS DE RESULTATS 
     # ========================================================= 
-    tab_civil, tab_hydro, tab_topo = st.tabs(["Opérations Maritimes & Quantités", "Météocéan & Hydrodynamique", "Plan Topo & Contours"]) 
+    tab_civil, tab_hydro, tab_topo = st.tabs(["Genie Civil & Logistique", "Hydrologie & Assainissement", "Plan Topo & Contours"]) 
 
     with tab_civil: 
-        st.subheader("Bilan des Opérations : Terre & Mer") 
-        
+        st.subheader("Comparateur de Solutions (Benchmark Strategique)") 
+        df_bench = pd.DataFrame({ 
+            "Scenario": ["1. IA : Zéro-Balance", "2. IA : Raccordement", "3. Configuration Actuelle"], 
+            "Deblai (m3)": [f"{s1_deb:,.0f}", f"{s2_deb:,.0f}", f"{current_deblai:,.0f}"], 
+            "Remblai (m3)": [f"{s1_rem:,.0f}", f"{s2_rem:,.0f}", f"{current_remblai:,.0f}"], 
+            "Bilan Net (m3)": [f"{s1_bil:,.0f}", f"{s2_bil:,.0f}", f"{current_bilan:,.0f}"], 
+            "Mur Max Remblai (m)": [f"{s1_m_rem:.1f}", f"{s2_m_rem:.1f}", f"{current_m_rem:.1f}"], 
+            "Mur Max Deblai (m)": [f"{s1_m_deb:.1f}", f"{s2_m_deb:.1f}", f"{current_m_deb:.1f}"], 
+            "Perte Espace Talus (m2)": [f"{s1_la:,.0f}", f"{s2_la:,.0f}", f"{current_lost_area:,.0f}"] 
+        }) 
+        st.dataframe(df_bench, use_container_width=True, hide_index=True) 
+         
+        st.markdown("---") 
         r1, r2, r3 = st.columns(3) 
         with r1: 
-            st.write("### Excavation (Cut)") 
-            st.write(f"**Dragage Marin :** <span style='color:red;'>{c_drag_mer:,.0f} m³</span>", unsafe_allow_html=True) 
-            st.write(f"**Déblai Terrestre :** <span style='color:darkred;'>{c_deb_terre:,.0f} m³</span>", unsafe_allow_html=True) 
-            st.write(f"**Total Excavé :** {(c_drag_mer + c_deb_terre):,.0f} m³") 
+            st.write("### Mouvements de Terre") 
+            st.write(f"**Bilan Net :** {current_bilan:,.0f} m³") 
+            st.write(f"Excavation : {current_deblai:,.0f} m³") 
+            st.write(f"Apport : {current_remblai:,.0f} m³") 
              
         with r2: 
-            st.write("### Apport (Fill / Réclamation)") 
-            st.write(f"**Remblai Terrestre :** <span style='color:green;'>{c_rem_terre:,.0f} m³</span>", unsafe_allow_html=True) 
-            st.write(f"**Remblai Sous-Marin :** <span style='color:blue;'>{c_rem_sous:,.0f} m³</span>", unsafe_allow_html=True) 
-            st.write(f"**Réclamation (Sur Mer) :** <span style='color:darkblue;'>{c_rem_sur:,.0f} m³</span>", unsafe_allow_html=True) 
-            st.write(f"**Total Apport :** {current_fill:,.0f} m³")
+            st.write("### Frontieres (Murs & Talus)") 
+            l_mrem = sum(w['length'] for w in bounds_stats if w['type']=='Mur_Remblai') 
+            l_mdeb = sum(w['length'] for w in bounds_stats if w['type']=='Mur_Deblai') 
+            st.write(f"**Murs Remblai :** {l_mrem:,.0f} ml (Max: {current_m_rem:.1f}m)") 
+            st.write(f"**Murs Deblai :** {l_mdeb:,.0f} ml (Max: {current_m_deb:.1f}m)") 
+            st.write(f"**Perte d'emprise (Talus) :** {current_lost_area:,.0f} m²") 
 
         with r3: 
             st.write("### Planification Logistique") 
-            st.write(f"**Flotte :** {selected_equip.split('(')[0].strip()}") 
-            daily_prod = prod_m3_h * hours_per_day * efficiency_rate
-            total_work_vol = current_cut + current_fill
-            est_days = total_work_vol / daily_prod if daily_prod > 0 else 0
-            
-            st.write(f"**Rendement Effectif :** {daily_prod:,.0f} m³/j")
-            if est_days <= target_days:
-                st.markdown(f"<span style='color:green; font-weight:bold;'>Durée Est. : {est_days:,.0f} jours (Dans les délais)</span>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<span style='color:red; font-weight:bold;'>Durée Est. : {est_days:,.0f} jours (Dépassement)</span>", unsafe_allow_html=True)
+            st.write(f"**Engins :** {selected_equip.split('(')[0].strip()}") 
+            net_area = max(0.0, area_m2 - admin_sqm - (math.ceil(target_annual_teu / lane_cap) * 500) - current_lost_area) 
+            area_needed = ((target_annual_teu * dwell_time) / 365) * ratio_m2_teu / util_rate 
+            st.write(f"**Foncier Dispo Total (Magenta) :** {net_area:,.0f} m² (Requis: {area_needed:,.0f} m²)") 
+            st.write(f"**{current_shape_type} (Jaune) :** {operational_area_m2:,.0f} m²")
             
         st.markdown("---")
-        st.write("### Frontières & Foncier (Export Google Earth)")
+        st.write("### Exportation des Coordonnées (Pour Google Earth)")
         col_dl1, col_dl2, col_dl3 = st.columns(3)
         
-        # Résumé textuel Frontières/Foncier
-        l_mrem = sum(w['length'] for w in bounds_stats if 'Quai' in w['type'] or 'Mur_Remblai' in w['type']) 
-        l_mdeb = sum(w['length'] for w in bounds_stats if 'Paroi' in w['type'] or 'Mur_Deblai' in w['type']) 
-        col_dl1.markdown(f"**Ouvrages de Soutènement :**<br>Quai/Remblai : {l_mrem:,.0f} ml<br>Paroi/Déblai : {l_mdeb:,.0f} ml", unsafe_allow_html=True)
+        df_limite = pd.DataFrame([{"Lat": lat, "Lon": lon} for lon, lat in st.session_state['geoms']['poly']])
+        col_dl1.download_button("📥 1. Limite Initiale (CSV)", df_limite.to_csv(index=False).encode('utf-8'), "1_Limite_Initiale.csv", "text/csv", use_container_width=True)
         
-        net_area = area_m2 - admin_sqm - (math.ceil(target_annual_teu / lane_cap) * 500) - current_lost_area 
-        area_needed = ((target_annual_teu * dwell_time) / 365) * ratio_m2_teu / util_rate 
-        col_dl2.markdown(f"**Foncier Dispo (Magenta) :**<br>{net_area:,.0f} m² (Requis: {area_needed:,.0f} m²)", unsafe_allow_html=True)
-        col_dl3.markdown(f"**{current_shape_type} (Jaune) :**<br>{operational_area_m2:,.0f} m²", unsafe_allow_html=True)
-        
-        # Boutons Export
-        poly_export = [] 
-        for i, (lon, lat) in enumerate(st.session_state['geoms']['poly']): poly_export.append({"Nom": "1_Zone_Etude", "Lat": lat, "Lon": lon, "Ordre": i}) 
-        if inner_polygon_pts: 
-            for i, (lat, lon) in enumerate(inner_polygon_pts): poly_export.append({"Nom": "2_Emprise_Magenta", "Lat": lat, "Lon": lon, "Ordre": i}) 
+        if inner_polygon_pts:
+            df_magenta = pd.DataFrame([{"Lat": lat, "Lon": lon} for lat, lon in inner_polygon_pts])
+            col_dl2.download_button("📥 2. Emprise Magenta (CSV)", df_magenta.to_csv(index=False).encode('utf-8'), "2_Emprise_Utile.csv", "text/csv", use_container_width=True)
+            
         if best_shape_ll:
-            for i, (lat, lon) in enumerate(best_shape_ll[0]): poly_export.append({"Nom": f"3_{current_shape_type}_Jaune", "Lat": lat, "Lon": lon, "Ordre": i})
-        csv_export = pd.DataFrame(poly_export).to_csv(index=False).encode('utf-8') 
-        st.download_button("📥 EXPORTER LES CONTOURS (.CSV pour GIS/Google Earth)", csv_export, "contours_projet.csv", "text/csv", use_container_width=True)
+            df_shape = pd.DataFrame([{"Lat": lat, "Lon": lon} for lat, lon in best_shape_ll[0]])
+            col_dl3.download_button(f"📥 3. {current_shape_type} Jaune (CSV)", df_shape.to_csv(index=False).encode('utf-8'), f"3_Forme_Optimisee.csv", "text/csv", use_container_width=True)
 
         # ========================================================= 
-        # CARTE PRINCIPALE 
+        # CARTE PRINCIPALE & DRAINAGE 
         # ========================================================= 
         st.markdown("---") 
-        st.subheader("Plan de Masse") 
+        st.subheader("Plan de Nivellement, Ecoulement & Frontieres") 
+        st.caption("Ligne Verte = Raccordement parfait. Ligne Magenta pointillée = Emprise utile nette. Bloc Jaune = Foncier Optimisé.") 
          
-        m_res = folium.Map(location=st.session_state['proj_info']['center'], zoom_start=16, tiles='OpenStreetMap') 
+        m_res = folium.Map(location=st.session_state['proj_info']['center'], zoom_start=17, tiles='OpenStreetMap') 
         folium.Polygon(locations=[(p[1], p[0]) for p in st.session_state['geoms']['poly']], color='black', weight=2, fill=False).add_to(m_res) 
          
         max_d = max(abs(df['Diff_Earth'].min()), abs(df['Diff_Earth'].max())) 
-        if max_d == 0: max_d = 0.1
-        colormap = cm.LinearColormap(colors=['red', 'white', 'blue'], index=[-max_d, 0, max_d], vmin=-max_d, vmax=max_d) 
+        colormap = cm.LinearColormap(colors=['red', 'white', 'blue'], vmin=-max_d, vmax=max_d) 
         colormap.add_to(m_res) 
          
         for _, r in df.iterrows(): 
             folium.CircleMarker([r['Lat'], r['Lon']], radius=4 if r['In_Project'] else 2, color=colormap(r['Diff_Earth']), fill=True, fill_opacity=0.8 if r['In_Project'] else 0.4).add_to(m_res) 
              
         for w in bounds_stats: 
-            if "Quai" in w['type'] or "Mur" in w['type'] or "Paroi" in w['type']: 
-                c = 'blue' if 'Remblai' in w['type'] or 'Quai' in w['type'] else 'red' 
-                folium.PolyLine(locations=w['coords'], color=c, weight=6, tooltip=f"{w['type']} | {w['length']:.0f}m").add_to(m_res) 
+            if "Mur" in w['type']: 
+                c = 'blue' if 'Remblai' in w['type'] else 'red' 
+                tt = f"{w['type']} | Long: {w['length']:.0f}m | H_Max: {w['max_h']:.1f}m" 
+                folium.PolyLine(locations=w['coords'], color=c, weight=6, tooltip=tt).add_to(m_res) 
             elif "Talus" in w['type']: 
                 c = 'cyan' if 'Remblai' in w['type'] else 'orange' 
-                folium.PolyLine(locations=w['coords'], color=c, weight=4, dash_array='10,10', tooltip=f"{w['type']} | Emprise: {w['avg_w']:.1f}m").add_to(m_res) 
+                tt = f"{w['type']} | Long: {w['length']:.0f}m | Emprise Sol: {w['avg_w']:.1f}m" 
+                folium.PolyLine(locations=w['coords'], color=c, weight=4, dash_array='10,10', tooltip=tt).add_to(m_res) 
             elif "Raccordement" in w['type']: 
-                folium.PolyLine(locations=w['coords'], color='#00FF00', weight=5).add_to(m_res) 
+                tt = f"Raccordement Parfait | Long: {w['length']:.0f}m" 
+                folium.PolyLine(locations=w['coords'], color='#00FF00', weight=5, tooltip=tt).add_to(m_res) 
 
         if inner_polygon_pts: 
-            folium.Polygon(locations=inner_polygon_pts, color='#FF00FF', weight=3, dash_array='5,5', fill=False, tooltip="Limite Foncier Utile Nette").add_to(m_res) 
+            folium.Polygon(locations=inner_polygon_pts, color='#FF00FF', weight=3, dash_array='5,5', fill=False, tooltip="Limite du Foncier Utile Nette").add_to(m_res) 
             
         if best_shape_ll:
-            folium.Polygon(locations=best_shape_ll[0], color='#FFD700', weight=4, fill=True, fill_color='#FFD700', fill_opacity=0.4, tooltip=f"{current_shape_type} Optimum").add_to(m_res)
+            folium.Polygon(locations=best_shape_ll[0], color='#FFD700', weight=4, fill=True, fill_color='#FFD700', fill_opacity=0.4, tooltip=f"{current_shape_type} Maximum").add_to(m_res)
 
-        if applied_slope_pct > 0.001 and "Plate" not in type_plateforme: 
+        if applied_slope_pct > 0.001 and type_plateforme != "Plate": 
             def draw_water_arrow(azimuth, color='black'): 
-                dist_m, head_m = 50, 15 
+                dist_m, head_m = 40, 10 
                 end_x, end_y = dist_m * math.sin(math.radians(azimuth)), dist_m * math.cos(math.radians(azimuth)) 
                 gps_origin, gps_end = m_to_latlon(0, 0), m_to_latlon(end_x, end_y) 
-                folium.PolyLine(locations=[gps_origin, gps_end], color=color, weight=6).add_to(m_res) 
+                folium.PolyLine(locations=[gps_origin, gps_end], color=color, weight=5).add_to(m_res) 
                 a1, a2 = math.radians(azimuth + 150), math.radians(azimuth - 150) 
-                folium.PolyLine(locations=[gps_end, m_to_latlon(end_x + head_m * math.sin(a1), end_y + head_m * math.cos(a1))], color=color, weight=6).add_to(m_res) 
-                folium.PolyLine(locations=[gps_end, m_to_latlon(end_x + head_m * math.sin(a2), end_y + head_m * math.cos(a2))], color=color, weight=6).add_to(m_res) 
+                folium.PolyLine(locations=[gps_end, m_to_latlon(end_x + head_m * math.sin(a1), end_y + head_m * math.cos(a1))], color=color, weight=5).add_to(m_res) 
+                folium.PolyLine(locations=[gps_end, m_to_latlon(end_x + head_m * math.sin(a2), end_y + head_m * math.cos(a2))], color=color, weight=5).add_to(m_res) 
             draw_water_arrow(applied_azimuth) 
-            if "Double Pente" in type_plateforme: draw_water_arrow((applied_azimuth + 180) % 360) 
+            if type_plateforme == "Double Pente (Faitage)": draw_water_arrow((applied_azimuth + 180) % 360) 
 
         # --- MOTEUR DES COUPES --- 
         st.markdown("---") 
-        st.subheader("Coupes Transversales (A-A' et B-B')") 
+        st.subheader("Profils d'Execution Orthogonaux (A-A' et B-B')") 
          
         col_c1, col_c2, col_c3 = st.columns(3) 
         with col_c1: angle_coupe = st.slider("Rotation des Axes de Coupe (°)", 0, 180, 0, step=1) 
@@ -860,21 +785,9 @@ if st.session_state['raw_df'] is not None:
         def create_profile_fig(df_slice, title): 
             fig = go.Figure() 
             if not df_slice.empty: 
-                min_dist, max_dist = df_slice['Dist'].min(), df_slice['Dist'].max()
-                fig.add_trace(go.Scatter(x=[min_dist, max_dist], y=[0, 0], mode='lines', name='Niveau Zéro (Mer)', line=dict(color='cyan', width=1, dash='dashdot')))
-
-                fig.add_trace(go.Scatter(x=df_slice['Dist'], y=df_slice['Z_FGL'], mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'))
-                z_cut = np.maximum(df_slice['Z_FGL'], df_slice['Z_Ext'])
-                fig.add_trace(go.Scatter(x=df_slice['Dist'], y=z_cut, mode='none', fill='tonexty', fillcolor='rgba(255, 0, 0, 0.4)', name='Dragage/Déblai'))
-                
-                fig.add_trace(go.Scatter(x=df_slice['Dist'], y=df_slice['Z_FGL'], mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'))
-                z_fill = np.minimum(df_slice['Z_FGL'], df_slice['Z_Ext'])
-                if allow_reclamation:
-                    fig.add_trace(go.Scatter(x=df_slice['Dist'], y=z_fill, mode='none', fill='tonexty', fillcolor='rgba(0, 0, 255, 0.4)', name='Remblai/Réclamation'))
-
-                fig.add_trace(go.Scatter(x=df_slice['Dist'], y=df_slice['Z_Ext'], mode='lines', name='Fonds / Terrain Naturel', line=dict(color='brown', width=2))) 
-                fig.add_trace(go.Scatter(x=df_slice['Dist'], y=df_slice['Z_FGL'], mode='lines', name='Cote Théorique (Cible)', line=dict(color='black', width=2, dash='dash'))) 
-                fig.add_trace(go.Scatter(x=df_slice['Dist'], y=df_slice['Z_Sub'], mode='lines', name='Fond de Souille', line=dict(color='royalblue', width=2))) 
+                fig.add_trace(go.Scatter(x=df_slice['Dist'], y=df_slice['Z_Ext'], mode='lines', name='Terrain Naturel', line=dict(color='brown', width=2))) 
+                fig.add_trace(go.Scatter(x=df_slice['Dist'], y=df_slice['Z_FGL'], mode='lines', name='Asphalte (FGL)', line=dict(color='black', width=2, dash='dash'))) 
+                fig.add_trace(go.Scatter(x=df_slice['Dist'], y=df_slice['Z_Sub'], mode='lines', name='Fond de Forme', line=dict(color='royalblue', width=2))) 
                  
                 in_p = df_slice[df_slice['In_Project']] 
                 if not in_p.empty: 
@@ -888,21 +801,19 @@ if st.session_state['raw_df'] is not None:
                     fig.add_vline(x=d_min, line_width=1, line_dash="solid", line_color="black") 
                     fig.add_vline(x=d_max, line_width=1, line_dash="solid", line_color="black") 
                      
-                    if allow_reclamation or dz_min < 0:
-                        if w_min > 0: 
-                            fig.add_vline(x=d_min+w_min, line_width=2, line_dash="dash", line_color="magenta") 
-                            fig.add_vrect(x0=d_min, x1=d_min+w_min, fillcolor="orange", opacity=0.2, layer="below", annotation_text="Talus") 
-                        elif abs(dz_min) > max_slope_height: 
-                            fig.add_vrect(x0=d_min, x1=d_min+1.0, fillcolor="red", opacity=0.3, layer="below", annotation_text="Ouvrage") 
+                    if w_min > 0: 
+                        fig.add_vline(x=d_min+w_min, line_width=2, line_dash="dash", line_color="magenta") 
+                        fig.add_vrect(x0=d_min, x1=d_min+w_min, fillcolor="orange", opacity=0.2, layer="below", annotation_text="Talus") 
+                    elif abs(dz_min) > max_slope_height: 
+                        fig.add_vrect(x0=d_min, x1=d_min+1.0, fillcolor="red", opacity=0.3, layer="below", annotation_text="Mur") 
 
-                    if allow_reclamation or dz_max < 0:
-                        if w_max > 0: 
-                            fig.add_vline(x=d_max-w_max, line_width=2, line_dash="dash", line_color="magenta") 
-                            fig.add_vrect(x0=d_max-w_max, x1=d_max, fillcolor="orange", opacity=0.2, layer="below", annotation_text="Talus") 
-                        elif abs(dz_max) > max_slope_height: 
-                            fig.add_vrect(x0=d_max-1.0, x1=d_max, fillcolor="red", opacity=0.3, layer="below", annotation_text="Ouvrage") 
+                    if w_max > 0: 
+                        fig.add_vline(x=d_max-w_max, line_width=2, line_dash="dash", line_color="magenta") 
+                        fig.add_vrect(x0=d_max-w_max, x1=d_max, fillcolor="orange", opacity=0.2, layer="below", annotation_text="Talus") 
+                    elif abs(dz_max) > max_slope_height: 
+                        fig.add_vrect(x0=d_max-1.0, x1=d_max, fillcolor="red", opacity=0.3, layer="below", annotation_text="Mur") 
 
-            fig.update_layout(title=title, height=350, margin=dict(l=20, r=20, t=40, b=20), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), xaxis_title="Distance de Coupe (m)", yaxis_title="Cote Z (m MSL)") 
+            fig.update_layout(title=title, height=350, margin=dict(l=20, r=20, t=40, b=20), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), xaxis_title="Distance de Coupe (m)", yaxis_title="Elevation (m MSL)") 
             if fix_ratio: fig.update_yaxes(scaleanchor="x", scaleratio=z_exag) 
             return fig 
 
@@ -910,16 +821,10 @@ if st.session_state['raw_df'] is not None:
         with cg1: st.plotly_chart(create_profile_fig(slice_A, "Coupe Transversale A - A'"), use_container_width=True) 
         with cg2: st.plotly_chart(create_profile_fig(slice_B, "Coupe Longitudinale B - B'"), use_container_width=True) 
 
-    # ONGLET METEOCEAN / HYDRO
+    # ONGLET HYDROLOGIE 
     with tab_hydro: 
-        st.write("### Météocéan & Hydrologie (Loi de Montana)") 
+        st.write("### Hydrologie & Assainissement") 
         
-        if st.session_state.get('meteo'):
-            met = st.session_state['meteo']
-            col_m1, col_m2 = st.columns(2)
-            col_m1.info(f"🌬️ **Vent Dominant :** {met['wind_spd']} km/h (Prov. {met['wind_dir']}°)")
-            col_m2.info(f"🌊 **Courant Dominant :** {met['curr_spd']} m/s (Prov. {met['curr_dir']}°)")
-            
         def get_climate_params(lat, lon, freq_str):
             if 30 <= lat <= 38 and -10 <= lon <= 12: 
                 zone = "Maghreb / Climat Semi-Aride"
@@ -952,11 +857,11 @@ if st.session_state['raw_df'] is not None:
 
         col_h1, col_h2 = st.columns(2)
         with col_h1:
-            st.subheader("1. Pluie de Projet")
+            st.subheader("1. Pluie de Projet (Loi de Montana)")
             freq = st.selectbox("Période de retour", ["1 an (Très fréquent)", "2 ans (Biennale)", "5 ans (Quinquennale)", "7 ans", "10 ans (Décennale)", "20 ans (Vicennale)", "50 ans (Cinquantennale)"], index=4)
             
             zone_name, def_a, def_b = get_climate_params(c_lat, c_lon, freq)
-            st.caption(f"🌍 Zone détectée : **{zone_name}**")
+            st.info(f"🌍 Zone détectée : **{zone_name}**")
             
             montana_a = st.number_input("Coefficient Montana 'a'", value=float(def_a), step=0.5)
             montana_b = st.number_input("Coefficient Montana 'b'", value=float(def_b), step=0.05)
@@ -966,8 +871,9 @@ if st.session_state['raw_df'] is not None:
             st.success(f"Hauteur de pluie générée : **{pluie_mm:.1f} mm**")
             
         with col_h2:
-            st.subheader("2. Bassin Versant (Terre-Plein)")
-            surface_bv = st.number_input("Surface à drainer (m²)", value=float(operational_area_m2), step=100.0)
+            st.subheader("2. Bassin Versant")
+            net_area_bv = max(0.0, area_m2 - admin_sqm - (math.ceil(target_annual_teu / lane_cap) * 500) - current_lost_area) 
+            surface_bv = st.number_input("Surface à drainer (m²)", value=float(net_area_bv), step=100.0)
             
             type_sol = st.selectbox("Type de Revêtement", [
                 "Asphalte / Béton (Cr = 0.95)",
@@ -980,6 +886,7 @@ if st.session_state['raw_df'] is not None:
                 cr = st.slider("Coefficient de Ruissellement (Cr)", 0.1, 1.0, 0.9)
             else:
                 cr = float(type_sol.split("=")[1].replace(")", "").strip())
+                st.write(f"Coefficient appliqué : **{cr}**")
                 
             fuite = st.number_input("Débit de fuite autorisé (L/s/ha)", value=10.0, step=1.0)
             
@@ -995,9 +902,9 @@ if st.session_state['raw_df'] is not None:
         col_res2.metric("Volume dissipé (Fuite)", f"{v_evac:,.0f} m³")
         col_res3.metric("BASSIN DE RÉTENTION REQUIS", f"{v_ret:,.0f} m³")
 
-    # ONGLET LIGNES DE CONTOUR (Topographie)
+    # ONGLET LIGNES DE CONTOUR
     with tab_topo:
-        st.write("### Plan Topographique / Bathymétrique")
+        st.write("### Plan Topographique")
         
         col_t1, col_t2, col_t3 = st.columns([2, 1, 1])
         with col_t1:
@@ -1027,7 +934,7 @@ if st.session_state['raw_df'] is not None:
                     levels = np.arange(math.floor(zmin), math.ceil(zmax) + step_contour, step_contour)
                     if len(levels) > 1:
                         contour_lines = ax.tricontour(triang, df['Z_Ext'], levels=levels)
-                        cmap = cm.LinearColormap(colors=['red', 'yellow', 'green', 'blue', 'darkblue'], vmin=zmin, vmax=zmax)
+                        cmap = cm.LinearColormap(colors=['green', 'yellow', 'red'], vmin=zmin, vmax=zmax)
                         m_contour.add_child(cmap)
                         
                         if hasattr(contour_lines, 'allsegs'):
@@ -1049,7 +956,6 @@ if st.session_state['raw_df'] is not None:
             except Exception as e:
                 st.error(f"Erreur Contour: {e}")
         else:
-            # GROSSES FLÈCHES (Vecteurs)
             res_5x = actual_res * 5 
             df_topo = df.copy()  
             df_topo['X_bin'] = (df_topo['X'] // res_5x) * res_5x 
@@ -1077,15 +983,15 @@ if st.session_state['raw_df'] is not None:
                     if loc_slope > 0.5: 
                         loc_az = (math.degrees(math.atan2(-c_q[0], -c_q[1])) + 360) % 360 
                         cx, cy = group['X'].mean(), group['Y'].mean() 
-                        L_arr = 25 
+                        L_arr = 20 
                         end_x = cx + L_arr * math.sin(math.radians(loc_az)) 
                         end_y = cy + L_arr * math.cos(math.radians(loc_az)) 
                         gps_origin = m_to_latlon(cx, cy) 
                         gps_end = m_to_latlon(end_x, end_y) 
-                        folium.PolyLine(locations=[gps_origin, gps_end], color='cyan', weight=5, tooltip=f"Pente: {loc_slope:.1f}%").add_to(m_contour) 
-                        head_L = 10
+                        folium.PolyLine(locations=[gps_origin, gps_end], color='cyan', weight=4, tooltip=f"Pente: {loc_slope:.1f}%").add_to(m_contour) 
+                        head_L = 8 
                         a1, a2 = math.radians(loc_az + 150), math.radians(loc_az - 150) 
-                        folium.PolyLine(locations=[gps_end, m_to_latlon(end_x + head_L * math.sin(a1), end_y + head_L * math.cos(a1))], color='cyan', weight=5).add_to(m_contour) 
-                        folium.PolyLine(locations=[gps_end, m_to_latlon(end_x + head_L * math.sin(a2), end_y + head_L * math.cos(a2))], color='cyan', weight=5).add_to(m_contour) 
+                        folium.PolyLine(locations=[gps_end, m_to_latlon(end_x + head_L * math.sin(a1), end_y + head_L * math.cos(a1))], color='cyan', weight=4).add_to(m_contour) 
+                        folium.PolyLine(locations=[gps_end, m_to_latlon(end_x + head_L * math.sin(a2), end_y + head_L * math.cos(a2))], color='cyan', weight=4).add_to(m_contour) 
             
         st_folium(m_contour, width=1200, height=600, key=f"carte_contours_{topo_display}_{opacite_sat}")
