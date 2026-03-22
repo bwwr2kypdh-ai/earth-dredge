@@ -79,6 +79,12 @@ if 'map_center' not in st.session_state: st.session_state['map_center'] = [43.32
 if 'rect_data' not in st.session_state: st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
 if 'meteo' not in st.session_state: st.session_state['meteo'] = None
 
+# Valeurs de sécurité par défaut
+vol_cut_terre = vol_cut_mer = vol_fill_terre = vol_fill_sousmer = vol_fill_surmer = 0.0
+tot_cut = tot_fill = 0.0
+current_lost_area = 0.0
+bounds_stats = []
+
 # --- UI : BARRE LATERALE ---
 st.sidebar.header("Localisation") 
 search_q = st.sidebar.text_input("Port ou coordonnées (ex: 43.32, 5.34)") 
@@ -104,7 +110,6 @@ z_chenal = st.sidebar.number_input("Fond Marin / Chenal Base (m)", value=-12.0, 
 z_bassin = st.sidebar.number_input("Bassin Dragué Spécifique (m)", value=-15.0, step=0.5)
 z_evitage = st.sidebar.number_input("Cercle d'Évitage (m)", value=-16.0, step=0.5)
 
-# RÉINTÉGRATION DE LA PENTE
 st.sidebar.subheader("Pente du Fond Marin")
 design_slope_pct = st.sidebar.number_input("Pente (%)", value=0.0, step=0.1)
 rotation_offset = st.sidebar.slider("Azimut de Pente (°)", -180, 180, 0, step=1)
@@ -125,8 +130,6 @@ st.sidebar.markdown("---")
 st.sidebar.header("Géotechnique & Talus") 
 soil_ratios = {"Rocher (1:1)": 1.0, "Corail (1:1.5)": 1.5, "Argile (1:2)": 2.0, "Sable (1:3)": 3.0, "Vase (1:5)": 5.0} 
 slope_ratio = soil_ratios[st.sidebar.selectbox("Nature du Fond", list(soil_ratios.keys()), index=3)] * st.sidebar.number_input("FoS", value=1.2, step=0.1) 
-
-# RÉINTÉGRATION DE LA HAUTEUR MAX DU TALUS
 max_slope_height = st.sidebar.number_input("Hauteur Max Talus avant Ouvrage (m)", value=15.0, step=1.0)
 pavement_thick = st.sidebar.number_input("Surprofondeur / Chaussée (cm)", 0, 200, 50, step=10) / 100.0 
 
@@ -141,7 +144,9 @@ if st.sidebar.button("🚀 CALCULER FORME IA", type="primary"): st.session_state
 st.sidebar.markdown("---") 
 st.sidebar.header("Logistique & Flotte") 
 prod_m3_h = {"TSHD": 2500, "CSD": 1500, "Excavatrices": 400}[st.sidebar.selectbox("Flotte", ["TSHD", "CSD", "Excavatrices"])] 
-days, hours, eff = st.sidebar.number_input("Jours", value=120), st.sidebar.slider("Heures/j", 1, 24, 20), st.sidebar.slider("Efficacité %", 10, 100, 75)/100.0
+target_days = st.sidebar.number_input("Jours (Cible)", value=120)
+hours_per_day = st.sidebar.slider("Heures/j", 1, 24, 20)
+eff = st.sidebar.slider("Efficacité %", 10, 100, 75)/100.0
 
 st.sidebar.subheader("Capacité Terminal")
 target_annual_teu = st.sidebar.number_input("Trafic Annuel (TEU)", value=100000, min_value=1) 
@@ -240,6 +245,7 @@ with col2:
 
     if st.button("🗑️ PURGER TOUT", use_container_width=True):
         st.session_state['raw_df'] = st.session_state['master_df'] = None
+        st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
         st.rerun()
 
 # =========================================================================
@@ -248,7 +254,7 @@ with col2:
 if st.session_state['raw_df'] is not None:
     df = st.session_state['raw_df'].copy()
     
-    # Sécurisation totale des variables de session
+    # Sécurisation des variables de session
     proj = st.session_state.get('proj_info', {})
     c_lat, c_lon = proj.get('center', [43.325, 5.340])
     actual_res = proj.get('res', 10.0)
@@ -260,14 +266,18 @@ if st.session_state['raw_df'] is not None:
 
     # --- CARTE INTERACTIVE 3D ---
     st.markdown("---")
-    st.subheader("3. Modélisation 3D (Terminal, Quai, Digue, Bassins)")
-    st.info("🖌️ **Outils :** Polygone = Bassin de dragage | Cercle = Évitage | Ligne 1 = Digue | Ligne 2 = Mur de Quai. (L'IA gère le Terre-Plein via le bouton 'Calculer Forme').")
+    st.subheader("3. Modélisation 3D Interactive")
+    st.info("🖌️ **Règles de Dessin :**\n"
+            "- **Polygone 1 :** Terre-Plein (ou utilisez le bouton IA de la barre latérale).\n"
+            "- **Polygone 2 :** Bassin de Dragage (Z négatif).\n"
+            "- **Ligne 1 :** Digue Anti-Houle.\n"
+            "- **Ligne 2 :** Mur de Quai vertical.\n"
+            "- **Cercle :** Zone d'Évitage.")
     
     m_design = folium.Map(location=[c_lat, c_lon], zoom_start=16, tiles='OpenStreetMap')
     folium.Polygon(locations=[(p[1], p[0]) for p in st.session_state['geoms']['poly']], color='black', weight=2, fill=False).add_to(m_design)
     Draw(export=False, draw_options={'polyline':True, 'polygon':True, 'circle':True, 'rectangle':False, 'marker':False}).add_to(m_design)
     
-    # Affichage du MNT sous-jacent (échantillonné pour performance)
     df_samp = df[df['In_Project']].sample(min(2000, len(df[df['In_Project']])))
     cmap = cm.LinearColormap(['blue', 'cyan', 'green', 'yellow', 'red'], vmin=df['Z_Ext'].min(), vmax=df['Z_Ext'].max())
     for _, r in df_samp.iterrows(): folium.CircleMarker([r['Lat'], r['Lon']], radius=2, color=cmap(r['Z_Ext']), fill=True).add_to(m_design)
@@ -283,7 +293,19 @@ if st.session_state['raw_df'] is not None:
             elif g_type == "LineString": d_lines.append(d["geometry"]["coordinates"])
             elif g_type == "Point" and d.get("properties", {}).get("radius"): d_circles.append((d["geometry"]["coordinates"], d["properties"]["radius"]))
 
-    bassin_coords = d_polys[-1] if d_polys else None
+    # Application de la logique d'extraction structurée
+    term_coords_ll = None
+    bassin_coords = None
+    
+    # Si la forme IA est active, le 1er polygone dessiné est forcément le bassin
+    if st.session_state.get('rect_data', {}).get('coords'):
+        term_coords_ll = st.session_state['rect_data']['coords'][0]
+        if len(d_polys) > 0: bassin_coords = d_polys[0]
+    else:
+        # Sinon, 1er poly = Terre-plein, 2ème poly = Bassin
+        if len(d_polys) > 0: term_coords_ll = d_polys[0]
+        if len(d_polys) > 1: bassin_coords = d_polys[1]
+
     digue_coords = d_lines[0] if len(d_lines) > 0 else None
     quai_coords = d_lines[1] if len(d_lines) > 1 else None
     evitage_circle = d_circles[-1] if d_circles else None
@@ -331,8 +353,11 @@ if st.session_state['raw_df'] is not None:
                                                     best_shape = affinity.rotate(para, angle, origin=centroid, use_radians=False)
                 if best_shape:
                     st.session_state['rect_data'] = {'coords': [[m_to_latlon(x, y) for x, y in best_shape.exterior.coords]], 'area': best_area, 'type': forme_opt}
+                    st.rerun() # Force la mise à jour de la carte avec la forme IA
 
-    term_coords_ll = st.session_state['rect_data']['coords'][0] if st.session_state['rect_data']['coords'] else None
+    best_shape_ll = st.session_state['rect_data']['coords']
+    operational_area_m2 = st.session_state['rect_data']['area']
+    current_shape_type = st.session_state['rect_data'].get('type', 'Forme Optimisée')
     
     # --- MOTEUR 3D : CALCUL DU Z CIBLE (Z_FGL_Target) ---
     z_targets = []
@@ -413,6 +438,12 @@ if st.session_state['raw_df'] is not None:
     tot_cut = vol_cut_terre + vol_cut_mer
     tot_fill = vol_fill_terre + vol_fill_sousmer + vol_fill_surmer
 
+    bounds_pts = []
+    # Extration simple des limites pour affichage textuel
+    # (Simplifié pour alléger la boucle principale)
+    if quai_line: bounds_pts.append({'type': 'Quai', 'length': quai_line.length, 'max_h': z_terreplein - z_chenal})
+    if digue_line: bounds_pts.append({'type': 'Digue', 'length': digue_line.length, 'max_h': z_digue - z_chenal})
+
     # =========================================================================
     # --- RESULTATS & ONGLETS ---
     # =========================================================================
@@ -423,6 +454,7 @@ if st.session_state['raw_df'] is not None:
         c_v1.write("### Excavation (Dragage/Déblai)")
         c_v1.metric("Dragage Marin", f"{vol_cut_mer:,.0f} m³", "Sous l'eau", delta_color="off")
         c_v1.metric("Déblai Terrestre", f"{vol_cut_terre:,.0f} m³", "Sur terre", delta_color="off")
+        c_v1.metric("Total Excavé", f"{tot_cut:,.0f} m³")
         
         c_v2.write("### Remblaiement (Réclamation)")
         c_v2.metric("Remblai Sous-Marin", f"{vol_fill_sousmer:,.0f} m³", "Fondation", delta_color="off")
@@ -504,9 +536,9 @@ if st.session_state['raw_df'] is not None:
         
         # Trace du projet
         if term_coords_ll: folium.Polygon(locations=term_coords_ll, color='magenta', weight=4, fill=True, fill_opacity=0.2, tooltip="Terre-Plein (IA)").add_to(m_plan)
+        if bassin_coords: folium.Polygon(locations=bassin_coords, color='cyan', weight=3, fill=True, fill_opacity=0.2, dash_array='5,5', tooltip="Bassin de Dragage").add_to(m_plan)
         if digue_coords: folium.PolyLine(locations=[(lat, lon) for lon, lat in digue_coords], color='red', weight=8, tooltip="Digue").add_to(m_plan)
         if quai_coords: folium.PolyLine(locations=[(lat, lon) for lon, lat in quai_coords], color='black', weight=8, tooltip="Quai").add_to(m_plan)
-        if bassin_coords: folium.Polygon(locations=[(lat, lon) for lon, lat in bassin_coords], color='blue', weight=2, fill=False, dash_array='5,5', tooltip="Bassin Dragué").add_to(m_plan)
         
         try:
             fig, ax = plt.subplots()
