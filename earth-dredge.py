@@ -294,11 +294,6 @@ if st.session_state['raw_df'] is not None:
     def to_m(lon, lat): return (lon-c_lon)*111000*math.cos(math.radians(c_lat)), (lat-c_lat)*111000 
     def m_to_latlon(x, y): return y / 111000 + c_lat, x / (111000 * math.cos(math.radians(c_lat))) + c_lon 
     df['X'], df['Y'] = zip(*[to_m(ln, lt) for lt, ln in zip(df['Lat'], df['Lon'])]) 
-    
-    df['Z_FGL'] = df['Z_Ext'].copy()
-    df['Z_Sub'] = df['Z_Ext'].copy()
-    df['Diff_Earth'] = 0.0
-    df['Zone_Name'] = "Naturel / Hors Projet"
 
     # --- IA FONCIER ---
     poly_coords_m = [to_m(lon, lat) for lon, lat in st.session_state['geoms']['poly']] 
@@ -344,6 +339,7 @@ if st.session_state['raw_df'] is not None:
                 if best_shape:
                     new_coords = [[m_to_latlon(x, y) for x, y in best_shape.exterior.coords]]
                     st.session_state['marine_shapes']['terre_plein'] = new_coords[0]
+                    st.session_state['rect_data'] = {'coords': new_coords, 'area': best_area, 'type': forme_opt}
                     st.session_state['design_map_key'] += 1
                     st.rerun()
 
@@ -470,6 +466,7 @@ if st.session_state['raw_df'] is not None:
             
             if bassin_poly or evit_pt: zone = "Talus / Fond Base"
             
+            # Excavations
             in_bassin = bassin_poly and bassin_poly.contains(pt)
             in_evit = evit_pt and pt.distance(evit_pt) <= evit_rad
             
@@ -487,6 +484,7 @@ if st.session_state['raw_df'] is not None:
                 
             z_final = z_excav 
             
+            # Remblais
             in_tp = term_poly and term_poly.contains(pt)
             dist_term = term_poly.distance(pt) if term_poly else float('inf')
             
@@ -503,6 +501,7 @@ if st.session_state['raw_df'] is not None:
                     z_final = z_talus_term
                     if "Naturel" in zone or "Talus" in zone: zone = "Talus Terre-Plein"
                         
+            # Digue
             if digue_line:
                 dist_digue = digue_line.distance(pt)
                 if dist_digue < 5: 
@@ -542,6 +541,9 @@ if st.session_state['raw_df'] is not None:
             st.write("### Métré Détaillé par Infrastructure (Sans Double Comptage)")
             
             summary_data = []
+            tot_cut_table = 0.0
+            tot_fill_table = 0.0
+            
             for zn in sorted(df_p['Zone_Name'].unique()):
                 if zn == "Naturel / Hors Projet": continue
                 df_z = df_p[df_p['Zone_Name'] == zn]
@@ -565,16 +567,16 @@ if st.session_state['raw_df'] is not None:
                     "Bilan Net (Fill-Cut)": f"{(fill - cut):,.0f}"
                 })
                 
-                tot_cut += cut
-                tot_fill += fill
+                tot_cut_table += cut
+                tot_fill_table += fill
             
             if summary_data:
                 st.dataframe(pd.DataFrame(summary_data), hide_index=True)
             
             c_v3, c_v4 = st.columns(2)
             daily_prod = prod_m3_h * hours_per_day * eff
-            d_est = (tot_cut+tot_fill)/daily_prod if daily_prod>0 else 0
-            c_v3.metric("Volume Total Manutentionné", f"{(tot_cut+tot_fill):,.0f} m³")
+            d_est = (tot_cut_table + tot_fill_table)/daily_prod if daily_prod>0 else 0
+            c_v3.metric("Volume Total Manutentionné", f"{(tot_cut_table + tot_fill_table):,.0f} m³")
             c_v4.metric("Durée Estimée du Chantier", f"{d_est:,.0f} Jours", f"Cible: {target_days}j", delta_color="inverse" if d_est>target_days else "normal")
 
             # --- COUPES DYNAMIQUES AVEC MUR DE QUAI ---
@@ -585,15 +587,18 @@ if st.session_state['raw_df'] is not None:
                 df_s = df_sec[abs(df_sec[axis] - (off_A if axis=='Yc' else off_B)) < actual_res].copy()
                 if df_s.empty: return go.Figure()
                 
-                df_s['D'] = df_s['Xc' if axis=='Yc' else 'Yc'].round(0)
-                
                 quay_x = None
                 if shapes['quai']:
                     ql = LineString([to_m(lon, lat) for lon, lat in shapes['quai']])
                     df_s['Dist_Q'] = df_s.apply(lambda r: ql.distance(Point(r['X'], r['Y'])), axis=1)
                     q_pts = df_s[df_s['Dist_Q'] < actual_res*1.5]
-                    if not q_pts.empty: quay_x = q_pts['D'].mean()
+                    if not q_pts.empty:
+                        # Assigner 'D' avant de lire
+                        q_pts = q_pts.copy()
+                        q_pts['D'] = q_pts['Xc' if axis=='Yc' else 'Yc'].round(0)
+                        quay_x = q_pts['D'].mean()
 
+                df_s['D'] = df_s['Xc' if axis=='Yc' else 'Yc'].round(0)
                 df_s = df_s.groupby('D').mean().reset_index()
                 
                 fig = go.Figure()
