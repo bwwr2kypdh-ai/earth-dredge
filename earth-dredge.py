@@ -69,7 +69,7 @@ def fetch_meteo(lat, lon):
         return {'dir': dom_dir, 'spd': round(sum(spds)/len(spds), 1)}
     except: return None
 
-# Initialisation 100% sécurisée des dictionnaires pour éviter les KeyError
+# Initialisation 100% sécurisée des dictionnaires
 if 'raw_df' not in st.session_state: st.session_state['raw_df'] = None 
 if 'master_df' not in st.session_state: st.session_state['master_df'] = None
 if 'proj_info' not in st.session_state: st.session_state['proj_info'] = {'area_m2': 0.0, 'center': [43.325, 5.340], 'res': 10.0}
@@ -103,6 +103,11 @@ z_terreplein = st.sidebar.number_input("Plateforme Terre-Plein (m)", value=3.0, 
 z_chenal = st.sidebar.number_input("Fond Marin / Chenal Base (m)", value=-12.0, step=0.5)
 z_bassin = st.sidebar.number_input("Bassin Dragué Spécifique (m)", value=-15.0, step=0.5)
 z_evitage = st.sidebar.number_input("Cercle d'Évitage (m)", value=-16.0, step=0.5)
+
+# RÉINTÉGRATION DE LA PENTE
+st.sidebar.subheader("Pente du Fond Marin")
+design_slope_pct = st.sidebar.number_input("Pente (%)", value=0.0, step=0.1)
+rotation_offset = st.sidebar.slider("Azimut de Pente (°)", -180, 180, 0, step=1)
 allow_reclam = st.sidebar.toggle("Autoriser Réclamation (Remblai sur mer)", value=True)
 
 st.sidebar.markdown("---") 
@@ -120,6 +125,9 @@ st.sidebar.markdown("---")
 st.sidebar.header("Géotechnique & Talus") 
 soil_ratios = {"Rocher (1:1)": 1.0, "Corail (1:1.5)": 1.5, "Argile (1:2)": 2.0, "Sable (1:3)": 3.0, "Vase (1:5)": 5.0} 
 slope_ratio = soil_ratios[st.sidebar.selectbox("Nature du Fond", list(soil_ratios.keys()), index=3)] * st.sidebar.number_input("FoS", value=1.2, step=0.1) 
+
+# RÉINTÉGRATION DE LA HAUTEUR MAX DU TALUS
+max_slope_height = st.sidebar.number_input("Hauteur Max Talus avant Ouvrage (m)", value=15.0, step=1.0)
 pavement_thick = st.sidebar.number_input("Surprofondeur / Chaussée (cm)", 0, 200, 50, step=10) / 100.0 
 
 st.sidebar.markdown("---") 
@@ -134,6 +142,13 @@ st.sidebar.markdown("---")
 st.sidebar.header("Logistique & Flotte") 
 prod_m3_h = {"TSHD": 2500, "CSD": 1500, "Excavatrices": 400}[st.sidebar.selectbox("Flotte", ["TSHD", "CSD", "Excavatrices"])] 
 days, hours, eff = st.sidebar.number_input("Jours", value=120), st.sidebar.slider("Heures/j", 1, 24, 20), st.sidebar.slider("Efficacité %", 10, 100, 75)/100.0
+
+st.sidebar.subheader("Capacité Terminal")
+target_annual_teu = st.sidebar.number_input("Trafic Annuel (TEU)", value=100000, min_value=1) 
+dwell_time = st.sidebar.number_input("Temps de Séjour (Jours)", value=7, min_value=1) 
+lane_cap = st.sidebar.number_input("Capacité / Voie Gate", value=25000, min_value=1)
+admin_sqm = st.sidebar.number_input("Batiments (m2)", value=1500) 
+util_rate = st.sidebar.slider("Taux de Remplissage (%)", 10, 100, 75) / 100.0 
 
 # =========================================================================
 # --- ETAPE 1 : ACQUISITION MNT ---
@@ -225,7 +240,6 @@ with col2:
 
     if st.button("🗑️ PURGER TOUT", use_container_width=True):
         st.session_state['raw_df'] = st.session_state['master_df'] = None
-        st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
         st.rerun()
 
 # =========================================================================
@@ -234,7 +248,7 @@ with col2:
 if st.session_state['raw_df'] is not None:
     df = st.session_state['raw_df'].copy()
     
-    # Extraction sécurisée des variables depuis le dictionnaire (Évite le KeyError)
+    # Sécurisation totale des variables de session
     proj = st.session_state.get('proj_info', {})
     c_lat, c_lon = proj.get('center', [43.325, 5.340])
     actual_res = proj.get('res', 10.0)
@@ -332,7 +346,7 @@ if st.session_state['raw_df'] is not None:
     if term_poly and not term_poly.is_valid: term_poly = term_poly.buffer(0)
     if bassin_poly and not bassin_poly.is_valid: bassin_poly = bassin_poly.buffer(0)
 
-    # Base de l'eau
+    # Base de l'eau (Pente intégrée)
     app_slope = design_slope_pct 
     app_az = rotation_offset 
     S_s = app_slope / 100.0 
@@ -371,7 +385,7 @@ if st.session_state['raw_df'] is not None:
     # Interdiction remblai mer
     if not allow_reclam:
         mask_norec = (df['Z_Ext'] <= df['Z_FGL_Target']) & (df['Z_Ext'] <= 0)
-        df['Z_FGL'] = df['Z_FGL_Target']
+        df['Z_FGL'] = df['Z_FGL_Target'].copy()
         df.loc[mask_norec, 'Z_FGL'] = df.loc[mask_norec, 'Z_Ext']
     else:
         df['Z_FGL'] = df['Z_FGL_Target']
@@ -379,19 +393,19 @@ if st.session_state['raw_df'] is not None:
     df['Z_Sub'] = df['Z_FGL'] - pavement_thick
     if not allow_reclam: df.loc[mask_norec, 'Z_Sub'] = df.loc[mask_norec, 'Z_Ext']
     
-    df['Diff'] = df['Z_Sub'] - df['Z_Ext']
+    df['Diff_Earth'] = df['Z_Sub'] - df['Z_Ext']
     df_p = df[df['In_Project']]
 
     # --- VENTILATION ---
     is_land = df_p['Z_Ext'] > 0
     is_sea = df_p['Z_Ext'] <= 0
-    is_cut = df_p['Diff'] < 0
-    is_fill = df_p['Diff'] > 0
+    is_cut = df_p['Diff_Earth'] < 0
+    is_fill = df_p['Diff_Earth'] > 0
 
-    vol_cut_terre = abs(df_p[is_land & is_cut]['Diff'].sum()) * (actual_res**2)
-    vol_cut_mer = abs(df_p[is_sea & is_cut]['Diff'].sum()) * (actual_res**2)
+    vol_cut_terre = abs(df_p[is_land & is_cut]['Diff_Earth'].sum()) * (actual_res**2)
+    vol_cut_mer = abs(df_p[is_sea & is_cut]['Diff_Earth'].sum()) * (actual_res**2)
     
-    vol_fill_terre = df_p[is_land & is_fill]['Diff'].sum() * (actual_res**2)
+    vol_fill_terre = df_p[is_land & is_fill]['Diff_Earth'].sum() * (actual_res**2)
     df_fill_sea = df_p[is_sea & is_fill]
     vol_fill_sousmer = (np.minimum(df_fill_sea['Z_Sub'], 0) - df_fill_sea['Z_Ext']).sum() * (actual_res**2)
     vol_fill_surmer = np.maximum(df_fill_sea['Z_Sub'], 0).sum() * (actual_res**2)
@@ -488,9 +502,11 @@ if st.session_state['raw_df'] is not None:
         m_plan = folium.Map(location=[c_lat, c_lon], zoom_start=16, tiles=None)
         folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', opacity=opac).add_to(m_plan)
         
+        # Trace du projet
         if term_coords_ll: folium.Polygon(locations=term_coords_ll, color='magenta', weight=4, fill=True, fill_opacity=0.2, tooltip="Terre-Plein (IA)").add_to(m_plan)
         if digue_coords: folium.PolyLine(locations=[(lat, lon) for lon, lat in digue_coords], color='red', weight=8, tooltip="Digue").add_to(m_plan)
         if quai_coords: folium.PolyLine(locations=[(lat, lon) for lon, lat in quai_coords], color='black', weight=8, tooltip="Quai").add_to(m_plan)
+        if bassin_coords: folium.Polygon(locations=[(lat, lon) for lon, lat in bassin_coords], color='blue', weight=2, fill=False, dash_array='5,5', tooltip="Bassin Dragué").add_to(m_plan)
         
         try:
             fig, ax = plt.subplots()
