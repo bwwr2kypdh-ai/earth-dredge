@@ -294,6 +294,11 @@ if st.session_state['raw_df'] is not None:
     def to_m(lon, lat): return (lon-c_lon)*111000*math.cos(math.radians(c_lat)), (lat-c_lat)*111000 
     def m_to_latlon(x, y): return y / 111000 + c_lat, x / (111000 * math.cos(math.radians(c_lat))) + c_lon 
     df['X'], df['Y'] = zip(*[to_m(ln, lt) for lt, ln in zip(df['Lat'], df['Lon'])]) 
+    
+    df['Z_FGL'] = df['Z_Ext'].copy()
+    df['Z_Sub'] = df['Z_Ext'].copy()
+    df['Diff_Earth'] = 0.0
+    df['Zone_Name'] = "Naturel / Hors Projet"
 
     # --- IA FONCIER ---
     poly_coords_m = [to_m(lon, lat) for lon, lat in st.session_state['geoms']['poly']] 
@@ -587,19 +592,19 @@ if st.session_state['raw_df'] is not None:
                 df_s = df_sec[abs(df_sec[axis] - (off_A if axis=='Yc' else off_B)) < actual_res].copy()
                 if df_s.empty: return go.Figure()
                 
+                df_s['D'] = df_s['Xc' if axis=='Yc' else 'Yc'].round(0)
+                
                 quay_x = None
                 if shapes['quai']:
                     ql = LineString([to_m(lon, lat) for lon, lat in shapes['quai']])
                     df_s['Dist_Q'] = df_s.apply(lambda r: ql.distance(Point(r['X'], r['Y'])), axis=1)
-                    q_pts = df_s[df_s['Dist_Q'] < actual_res*1.5]
+                    q_pts = df_s[df_s['Dist_Q'] < actual_res*1.5].copy() # Ajout du .copy()
                     if not q_pts.empty:
-                        # Assigner 'D' avant de lire
-                        q_pts = q_pts.copy()
                         q_pts['D'] = q_pts['Xc' if axis=='Yc' else 'Yc'].round(0)
                         quay_x = q_pts['D'].mean()
 
-                df_s['D'] = df_s['Xc' if axis=='Yc' else 'Yc'].round(0)
-                df_s = df_s.groupby('D').mean().reset_index()
+                # On force numeric_only=True pour éviter le TypeError de Pandas !
+                df_s = df_s.groupby('D').mean(numeric_only=True).reset_index()
                 
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=[df_s['D'].min(), df_s['D'].max()], y=[0,0], mode='lines', name='Niveau 0 (Mer)', line=dict(color='cyan', dash='dash')))
