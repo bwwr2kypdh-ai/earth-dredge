@@ -69,10 +69,12 @@ def fetch_meteo(lat, lon):
         return {'dir': dom_dir, 'spd': round(sum(spds)/len(spds), 1)}
     except: return None
 
+# Initialisation 100% sécurisée des dictionnaires pour éviter les KeyError
 if 'raw_df' not in st.session_state: st.session_state['raw_df'] = None 
 if 'master_df' not in st.session_state: st.session_state['master_df'] = None
-if 'proj_info' not in st.session_state: st.session_state['proj_info'] = {}
+if 'proj_info' not in st.session_state: st.session_state['proj_info'] = {'area_m2': 0.0, 'center': [43.325, 5.340], 'res': 10.0}
 if 'geoms' not in st.session_state: st.session_state['geoms'] = {'poly': None} 
+if 'master_geoms' not in st.session_state: st.session_state['master_geoms'] = {'poly': None}
 if 'map_center' not in st.session_state: st.session_state['map_center'] = [43.325, 5.340] 
 if 'rect_data' not in st.session_state: st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
 if 'meteo' not in st.session_state: st.session_state['meteo'] = None
@@ -106,13 +108,12 @@ allow_reclam = st.sidebar.toggle("Autoriser Réclamation (Remblai sur mer)", val
 st.sidebar.markdown("---") 
 st.sidebar.header("Météocéan & Digue")
 if st.sidebar.button("🌬️ Analyser Vents & Digue"):
-    if st.session_state.get('proj_info'):
-        met = fetch_meteo(st.session_state['proj_info']['center'][0], st.session_state['proj_info']['center'][1])
-        if met:
-            st.session_state['meteo'] = met
-            st.sidebar.success(f"Vent: {met['dir']}°. Digue suggérée: {(met['dir']+90)%360}°")
-        else: st.sidebar.error("Erreur API Météo.")
-    else: st.sidebar.warning("Téléchargez le MNT d'abord.")
+    center_coords = st.session_state['proj_info'].get('center', [43.32, 5.34])
+    met = fetch_meteo(center_coords[0], center_coords[1])
+    if met:
+        st.session_state['meteo'] = met
+        st.sidebar.success(f"Vent: {met['dir']}°. Digue suggérée: {(met['dir']+90)%360}°")
+    else: st.sidebar.error("Erreur API Météo.")
 z_digue = st.sidebar.number_input("Cote Crête de Digue (m)", value=5.0, step=0.5)
 
 st.sidebar.markdown("---") 
@@ -126,6 +127,7 @@ st.sidebar.header("Optimisation Foncier IA")
 forme_opt = st.sidebar.radio("Forme", ["Rectangle", "Triangle Rectangle", "Losange (Parallélogramme)"])
 auto_angle = st.sidebar.toggle("Rotation Auto", value=True)
 manual_angle = st.sidebar.slider("Angle (°)", 0, 180, 0, disabled=auto_angle)
+yard_margin = st.sidebar.slider("Retrait Périphérique (m)", 0, 50, 5, step=1)
 if st.sidebar.button("🚀 CALCULER FORME IA", type="primary"): st.session_state['trigger_ia'] = True
 
 st.sidebar.markdown("---") 
@@ -163,29 +165,53 @@ with col2:
                 lons, lats = np.arange(min_lon, max_lon, actual_res/111000), np.arange(min_lat, max_lat, actual_res/111000)
                 pts = [Point(lon, lat) for lat in lats for lon in lons if buf_poly.contains(Point(lon, lat))]
                 
-                elevs = []
-                for i in range(0, len(pts), 50):
-                    chunk = pts[i:i+50]
-                    locs = "|".join([f"{p.y},{p.x}" for p in chunk])
+                if "Fichier Local" in api_choice and uploaded_mnt is not None:
                     try:
-                        if "GEBCO" in api_choice:
-                            res = requests.get(f"https://api.opentopodata.org/v1/gebco2020?locations={locs}").json()
-                            elevs.extend([r['elevation'] for r in res['results']])
-                            time.sleep(1.1)
-                        else:
-                            res = requests.get(f"https://api.open-meteo.com/v1/elevation?latitude={','.join(str(p.y) for p in chunk)}&longitude={','.join(str(p.x) for p in chunk)}").json()
-                            elevs.extend(res['elevation'])
-                    except: elevs.extend([0]*len(chunk))
-                
-                if elevs:
-                    df = pd.DataFrame({'Lat': [p.y for p in pts], 'Lon': [p.x for p in pts], 'Z_Ext': elevs})
-                    df['In_Project'] = df.apply(lambda r: poly.contains(Point(r['Lon'], r['Lat'])), axis=1)
-                    st.session_state['master_df'] = df.copy()
-                    st.session_state['raw_df'] = df.copy()
-                    st.session_state['geoms']['poly'] = poly_coords
-                    st.session_state['proj_info'] = {'area': area_m2, 'c_lat': c_lat, 'c_lon': c_lon, 'res': actual_res}
-                    st.success("MNT Chargé !")
-                    st.rerun()
+                        local_df = pd.read_csv(uploaded_mnt)
+                        lat_col = next((c for c in local_df.columns if c.lower() in ['lat', 'y', 'latitude']), None)
+                        lon_col = next((c for c in local_df.columns if c.lower() in ['lon', 'x', 'longitude']), None)
+                        z_col = next((c for c in local_df.columns if c.lower() in ['z', 'alt', 'elevation', 'elevation_m', 'z_ext']), None)
+                        
+                        if lat_col and lon_col and z_col:
+                            filtered_pts = []
+                            for _, row in local_df.iterrows():
+                                pt = Point(row[lon_col], row[lat_col])
+                                if buf_poly.contains(pt):
+                                    filtered_pts.append({'Lat': row[lat_col], 'Lon': row[lon_col], 'Z_Ext': row[z_col]})
+                            if filtered_pts:
+                                df = pd.DataFrame(filtered_pts)
+                                df['In_Project'] = df.apply(lambda r: poly.contains(Point(r['Lon'], r['Lat'])), axis=1)
+                                st.session_state['master_df'] = df.copy()
+                                st.session_state['raw_df'] = df.copy()
+                                st.session_state['geoms']['poly'] = poly_coords
+                                st.session_state['proj_info'] = {'area_m2': area_m2, 'center': [c_lat, c_lon], 'res': actual_res}
+                                st.success("MNT Local Chargé !")
+                                st.rerun()
+                    except Exception as e: st.error(f"Erreur lecture CSV: {e}")
+                else:
+                    elevs = []
+                    for i in range(0, len(pts), 50):
+                        chunk = pts[i:i+50]
+                        locs = "|".join([f"{p.y},{p.x}" for p in chunk])
+                        try:
+                            if "GEBCO" in api_choice:
+                                res = requests.get(f"https://api.opentopodata.org/v1/gebco2020?locations={locs}").json()
+                                elevs.extend([r['elevation'] for r in res['results']])
+                                time.sleep(1.1)
+                            else:
+                                res = requests.get(f"https://api.open-meteo.com/v1/elevation?latitude={','.join(str(p.y) for p in chunk)}&longitude={','.join(str(p.x) for p in chunk)}").json()
+                                elevs.extend(res['elevation'])
+                        except: elevs.extend([0]*len(chunk))
+                    
+                    if elevs:
+                        df = pd.DataFrame({'Lat': [p.y for p in pts], 'Lon': [p.x for p in pts], 'Z_Ext': elevs})
+                        df['In_Project'] = df.apply(lambda r: poly.contains(Point(r['Lon'], r['Lat'])), axis=1)
+                        st.session_state['master_df'] = df.copy()
+                        st.session_state['raw_df'] = df.copy()
+                        st.session_state['geoms']['poly'] = poly_coords
+                        st.session_state['proj_info'] = {'area_m2': area_m2, 'center': [c_lat, c_lon], 'res': actual_res}
+                        st.success("MNT (API) Chargé !")
+                        st.rerun()
 
     if st.button("2️⃣ ACTUALISER LE FILTRE (Local)", use_container_width=True):
         if st.session_state['master_df'] is not None and input_map_data["all_drawings"]:
@@ -199,6 +225,7 @@ with col2:
 
     if st.button("🗑️ PURGER TOUT", use_container_width=True):
         st.session_state['raw_df'] = st.session_state['master_df'] = None
+        st.session_state['rect_data'] = {'coords': [], 'area': 0.0, 'type': 'Rectangle'}
         st.rerun()
 
 # =========================================================================
@@ -206,7 +233,12 @@ with col2:
 # =========================================================================
 if st.session_state['raw_df'] is not None:
     df = st.session_state['raw_df'].copy()
-    c_lat, c_lon, actual_res = st.session_state['proj_info']['c_lat'], st.session_state['proj_info']['c_lon'], st.session_state['proj_info']['res']
+    
+    # Extraction sécurisée des variables depuis le dictionnaire (Évite le KeyError)
+    proj = st.session_state.get('proj_info', {})
+    c_lat, c_lon = proj.get('center', [43.325, 5.340])
+    actual_res = proj.get('res', 10.0)
+    area_m2 = proj.get('area_m2', 0.0)
     
     def to_m(lon, lat): return (lon-c_lon)*111000*math.cos(math.radians(c_lat)), (lat-c_lat)*111000 
     def m_to_latlon(x, y): return y / 111000 + c_lat, x / (111000 * math.cos(math.radians(c_lat))) + c_lon 
@@ -273,7 +305,7 @@ if st.session_state['raw_df'] is not None:
                                             if cand.within(rot_poly): best_area, best_shape = w*h, affinity.rotate(cand, angle, origin=centroid, use_radians=False)
                                         elif forme_opt == "Triangle Rectangle":
                                             if 0.5*w*h > best_area:
-                                                t = Polygon([(xs[i], ys[k]), (xs[j], ys[k]), (xs[i], ys[l])]) # Simplified
+                                                t = Polygon([(xs[i], ys[k]), (xs[j], ys[k]), (xs[i], ys[l])])
                                                 if t.within(rot_poly): best_area, best_shape = 0.5*w*h, affinity.rotate(t, angle, origin=centroid, use_radians=False)
                                         elif forme_opt == "Losange (Parallélogramme)":
                                             for shear in [-30, -15, 15, 30]:
@@ -290,8 +322,6 @@ if st.session_state['raw_df'] is not None:
     
     # --- MOTEUR 3D : CALCUL DU Z CIBLE (Z_FGL_Target) ---
     z_targets = []
-    
-    # Pre-processing géométries Mètres
     term_poly = Polygon([to_m(lon, lat) for lon, lat in term_coords_ll]) if term_coords_ll else None
     bassin_poly = Polygon([to_m(lon, lat) for lon, lat in bassin_coords]) if bassin_coords else None
     digue_line = LineString([to_m(lon, lat) for lon, lat in digue_coords]) if digue_coords else None
@@ -302,17 +332,21 @@ if st.session_state['raw_df'] is not None:
     if term_poly and not term_poly.is_valid: term_poly = term_poly.buffer(0)
     if bassin_poly and not bassin_poly.is_valid: bassin_poly = bassin_poly.buffer(0)
 
-    for x, y in zip(df['X'], df['Y']):
+    # Base de l'eau
+    app_slope = design_slope_pct 
+    app_az = rotation_offset 
+    S_s = app_slope / 100.0 
+    ux_s, uy_s = math.sin(math.radians(app_az)), math.cos(math.radians(app_az)) 
+    df['Z_sh_base'] = z_chenal - S_s * (df['X']*ux_s + df['Y']*uy_s) 
+
+    for x, y, z_base in zip(df['X'], df['Y'], df['Z_sh_base']):
         pt = Point(x, y)
-        z_final = z_chenal # Par défaut, le fond du chenal
+        z_final = z_base 
         
-        # 1. Terre-Plein (Priorité Haute)
+        # 1. Terre-Plein
         if term_poly and term_poly.contains(pt): z_final = z_terreplein
         else:
-            # Talus Terre-Plein
             dist_term = term_poly.distance(pt) if term_poly else float('inf')
-            
-            # Gestion du Quai (Casse le talus)
             is_behind_quay = False
             if quai_line and term_poly:
                 if quai_line.distance(pt) < dist_term and dist_term < 50: is_behind_quay = True
@@ -320,13 +354,13 @@ if st.session_state['raw_df'] is not None:
             z_talus_term = -float('inf') if is_behind_quay else (z_terreplein - (dist_term / slope_ratio))
             z_final = max(z_final, z_talus_term)
 
-        # 2. Digue (Surpasse le reste)
+        # 2. Digue 
         if digue_line:
             dist_digue = digue_line.distance(pt)
-            if dist_digue < 5: z_final = z_digue # Crête
-            else: z_final = max(z_final, z_digue - ((dist_digue - 5) / slope_ratio)) # Talus Digue
+            if dist_digue < 5: z_final = max(z_final, z_digue) 
+            else: z_final = max(z_final, z_digue - ((dist_digue - 5) / slope_ratio)) 
 
-        # 3. Bassin de Dragage & Évitage (Creuse le fond)
+        # 3. Bassin & Évitage 
         if bassin_poly and bassin_poly.contains(pt): z_final = min(z_final, z_bassin)
         if evit_pt and pt.distance(evit_pt) <= evit_rad: z_final = min(z_final, z_evitage)
 
@@ -334,7 +368,7 @@ if st.session_state['raw_df'] is not None:
 
     df['Z_FGL_Target'] = z_targets
     
-    # Interdiction du remblai sur la mer pure si non autorisé
+    # Interdiction remblai mer
     if not allow_reclam:
         mask_norec = (df['Z_Ext'] <= df['Z_FGL_Target']) & (df['Z_Ext'] <= 0)
         df['Z_FGL'] = df['Z_FGL_Target']
@@ -348,7 +382,7 @@ if st.session_state['raw_df'] is not None:
     df['Diff'] = df['Z_Sub'] - df['Z_Ext']
     df_p = df[df['In_Project']]
 
-    # --- VENTILATION DES VOLUMES ---
+    # --- VENTILATION ---
     is_land = df_p['Z_Ext'] > 0
     is_sea = df_p['Z_Ext'] <= 0
     is_cut = df_p['Diff'] < 0
@@ -400,22 +434,21 @@ if st.session_state['raw_df'] is not None:
 
         def plot_section(df_sec, title, axis):
             df_s = df_sec[abs(df_sec[axis] - (off_A if axis=='Yc' else off_B)) < actual_res].copy()
+            if df_s.empty: return go.Figure()
             df_s['D'] = df_s['Xc' if axis=='Yc' else 'Yc'].round(0)
             df_s = df_s.groupby('D').mean().reset_index()
             
             fig = go.Figure()
-            if not df_s.empty:
-                fig.add_trace(go.Scatter(x=[df_s['D'].min(), df_s['D'].max()], y=[0,0], mode='lines', name='Niveau 0 (Mer)', line=dict(color='cyan', dash='dash')))
-                
-                # Cut/Fill fill-to-next
-                fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_FGL'], line=dict(width=0), showlegend=False))
-                fig.add_trace(go.Scatter(x=df_s['D'], y=np.maximum(df_s['Z_FGL'], df_s['Z_Ext']), fill='tonexty', fillcolor='rgba(255,0,0,0.4)', name='Dragage/Déblai', line=dict(width=0)))
-                
-                fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_FGL'], line=dict(width=0), showlegend=False))
-                fig.add_trace(go.Scatter(x=df_s['D'], y=np.minimum(df_s['Z_FGL'], df_s['Z_Ext']), fill='tonexty', fillcolor='rgba(0,0,255,0.4)', name='Remblai/Réclam', line=dict(width=0)))
+            fig.add_trace(go.Scatter(x=[df_s['D'].min(), df_s['D'].max()], y=[0,0], mode='lines', name='Niveau 0 (Mer)', line=dict(color='cyan', dash='dash')))
+            
+            fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_FGL'], line=dict(width=0), showlegend=False))
+            fig.add_trace(go.Scatter(x=df_s['D'], y=np.maximum(df_s['Z_FGL'], df_s['Z_Ext']), fill='tonexty', fillcolor='rgba(255,0,0,0.4)', name='Dragage/Déblai', line=dict(width=0)))
+            
+            fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_FGL'], line=dict(width=0), showlegend=False))
+            fig.add_trace(go.Scatter(x=df_s['D'], y=np.minimum(df_s['Z_FGL'], df_s['Z_Ext']), fill='tonexty', fillcolor='rgba(0,0,255,0.4)', name='Remblai/Réclam', line=dict(width=0)))
 
-                fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_Ext'], name='Fond Naturel', line=dict(color='saddlebrown', width=2)))
-                fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_FGL'], name='Projet Fini', line=dict(color='black', width=3)))
+            fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_Ext'], name='Fond Naturel', line=dict(color='saddlebrown', width=2)))
+            fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_FGL'], name='Projet Fini', line=dict(color='black', width=3)))
             
             fig.update_layout(title=title, height=350, margin=dict(l=10, r=10, t=30, b=10))
             return fig
@@ -455,7 +488,6 @@ if st.session_state['raw_df'] is not None:
         m_plan = folium.Map(location=[c_lat, c_lon], zoom_start=16, tiles=None)
         folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', opacity=opac).add_to(m_plan)
         
-        # Trace du projet
         if term_coords_ll: folium.Polygon(locations=term_coords_ll, color='magenta', weight=4, fill=True, fill_opacity=0.2, tooltip="Terre-Plein (IA)").add_to(m_plan)
         if digue_coords: folium.PolyLine(locations=[(lat, lon) for lon, lat in digue_coords], color='red', weight=8, tooltip="Digue").add_to(m_plan)
         if quai_coords: folium.PolyLine(locations=[(lat, lon) for lon, lat in quai_coords], color='black', weight=8, tooltip="Quai").add_to(m_plan)
