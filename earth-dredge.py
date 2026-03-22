@@ -69,6 +69,7 @@ def fetch_meteo(lat, lon):
         return {'dir': dom_dir, 'spd': round(sum(spds)/len(spds), 1)}
     except: return None
 
+# Initialisation 100% sécurisée des dictionnaires
 if 'raw_df' not in st.session_state: st.session_state['raw_df'] = None 
 if 'master_df' not in st.session_state: st.session_state['master_df'] = None
 if 'proj_info' not in st.session_state: st.session_state['proj_info'] = {'area_m2': 0.0, 'center': [43.325, 5.340], 'res': 10.0}
@@ -114,6 +115,7 @@ if "Google" in api_choice:
     api_key = st.sidebar.text_input("Clé API Google Maps (Requise pour l'Hybride)", type="password")
 
 uploaded_mnt = st.sidebar.file_uploader("Importer MNT (CSV)", type=['csv']) if "Fichier" in api_choice else None
+st.sidebar.caption("💡 Le CSV doit contenir : Lat, Lon, Z_Ext")
 buffer_size = st.sidebar.slider("Débord d'Étude (m)", 0, 500, 100, step=25) 
 user_grid_res = st.sidebar.number_input("Maillage d'Analyse (m)", value=10.0, step=1.0) 
 
@@ -229,7 +231,6 @@ with col2:
                         locs = "|".join([f"{p.y},{p.x}" for p in chunk])
                         try:
                             if "Hybride" in api_choice:
-                                # GEBCO pour la mer, Google pour la terre (Réconciliation)
                                 r_gebco = requests.get(f"https://api.opentopodata.org/v1/gebco2020?locations={locs}").json()
                                 z_gebco = [r['elevation'] for r in r_gebco.get('results', [])]
                                 time.sleep(1.1)
@@ -240,8 +241,8 @@ with col2:
                                 else: z_goog = z_gebco
                                 
                                 for zg, zb in zip(z_goog, z_gebco):
-                                    if zb > -1.0: elevs.append(zg) # Si on s'approche de la côte, on priorise Google
-                                    else: elevs.append(zb) # Sinon GEBCO garde les fonds marins
+                                    if zb > -1.0: elevs.append(zg) 
+                                    else: elevs.append(zb) 
                                     
                             elif "GEBCO" in api_choice or "ETOPO1" in api_choice:
                                 api_url = "gebco2020" if "GEBCO" in api_choice else "etopo1"
@@ -345,7 +346,6 @@ if st.session_state['raw_df'] is not None:
     st.markdown("---")
     st.subheader("3. Modélisation 3D Interactive & Coupes")
     
-    # 1. Contrôles de coupe (Déplacés ici pour affichage en direct sur la carte)
     st.write("📐 **Ajustez l'emplacement des coupes (A-A' et B-B') :**")
     cc1, cc2, cc3 = st.columns(3)
     angle_c = cc1.slider("Rotation de la Grille de Coupe (°)", 0, 180, 0)
@@ -367,7 +367,6 @@ if st.session_state['raw_df'] is not None:
     gps_A1, gps_A2 = cut_to_gps(min_xc, off_A), cut_to_gps(max_xc, off_A) 
     gps_B1, gps_B2 = cut_to_gps(off_B, min_yc), cut_to_gps(off_B, max_yc) 
 
-    # 2. Outils de Dessin
     st.write("🖌️ **Outils de Dessin (Sélectionnez puis dessinez sur la carte) :**")
     draw_mode = st.radio("Sélecteur d'Outil :", 
         ["🟩 Terre-Plein (Polygone)", "🟦 Bassin Dragage (Polygone)", "⚫ Mur de Quai (Ligne)", "🟥 Digue Anti-Houle (Ligne)", "🔵 Cercle d'Évitage (Cercle)", "🔍 Navigation Seule"], 
@@ -380,17 +379,14 @@ if st.session_state['raw_df'] is not None:
     if c_del4.button("🗑️ Effacer Digue", width="stretch"): st.session_state['marine_shapes']['digue'] = None; st.session_state['design_map_key'] += 1; st.rerun()
     if c_del5.button("🗑️ Effacer Évitage", width="stretch"): st.session_state['marine_shapes']['evitage'] = None; st.session_state['design_map_key'] += 1; st.rerun()
     
-    # Rendu Map
     m_design = folium.Map(location=[c_lat, c_lon], zoom_start=16, tiles='OpenStreetMap')
     folium.Polygon(locations=[(p[1], p[0]) for p in st.session_state['geoms']['poly']], color='black', weight=2, fill=False).add_to(m_design)
     
-    # Ajout des Lignes de Coupe sur la carte
     folium.PolyLine(locations=[gps_A1, gps_A2], color='darkorange', weight=3, dash_array='5,5').add_to(m_design) 
     folium.Marker(gps_A1, icon=folium.DivIcon(html="<div style='font-size:14px; color:darkorange; font-weight:bold; background:white; border:1px solid black; padding:2px;'>A</div>")).add_to(m_design) 
     folium.PolyLine(locations=[gps_B1, gps_B2], color='darkgreen', weight=3, dash_array='5,5').add_to(m_design) 
     folium.Marker(gps_B1, icon=folium.DivIcon(html="<div style='font-size:14px; color:darkgreen; font-weight:bold; background:white; border:1px solid black; padding:2px;'>B</div>")).add_to(m_design) 
 
-    # Affichage des formes sauvegardées
     shapes = st.session_state['marine_shapes']
     if shapes['terre_plein']: folium.Polygon(locations=[(p[1], p[0]) for p in shapes['terre_plein']], color='#00FF00', weight=3, fill=True, fill_opacity=0.3, tooltip="Terre-Plein").add_to(m_design)
     if shapes['bassin']: folium.Polygon(locations=[(p[1], p[0]) for p in shapes['bassin']], color='#00FFFF', weight=3, fill=True, fill_opacity=0.3, tooltip="Bassin de Dragage").add_to(m_design)
@@ -398,7 +394,6 @@ if st.session_state['raw_df'] is not None:
     if shapes['digue']: folium.PolyLine(locations=[(p[1], p[0]) for p in shapes['digue']], color='#FF0000', weight=6, tooltip="Digue").add_to(m_design)
     if shapes['evitage']: folium.Circle(location=(shapes['evitage'][0][1], shapes['evitage'][0][0]), radius=shapes['evitage'][1], color='#0000FF', weight=3, fill=True, fill_opacity=0.3, tooltip="Cercle d'Évitage").add_to(m_design)
 
-    # Configuration conditionnelle de l'outil Draw
     draw_opts = {'polyline': False, 'polygon': False, 'circle': False, 'rectangle': False, 'marker': False}
     if "Terre-Plein" in draw_mode: draw_opts['polygon'] = {'shapeOptions': {'color': '#00FF00'}}
     elif "Bassin" in draw_mode: draw_opts['polygon'] = {'shapeOptions': {'color': '#00FFFF'}}
@@ -411,7 +406,6 @@ if st.session_state['raw_df'] is not None:
     
     design_map_data = st_folium(m_design, width="100%", height=500, key=f"design_map_{st.session_state['design_map_key']}", returned_objects=["last_active_drawing"])
 
-    # Traitement du nouveau tracé
     if design_map_data and design_map_data.get("last_active_drawing"):
         geom = design_map_data["last_active_drawing"]["geometry"]
         props = design_map_data["last_active_drawing"].get("properties", {})
@@ -451,23 +445,16 @@ if st.session_state['raw_df'] is not None:
     if term_poly and not term_poly.is_valid: term_poly = term_poly.buffer(0)
     if bassin_poly and not bassin_poly.is_valid: bassin_poly = bassin_poly.buffer(0)
 
-    # Base de l'eau (Pente intégrée)
     app_slope = design_slope_pct 
     app_az = rotation_offset 
     S_s = app_slope / 100.0 
     ux_s, uy_s = math.sin(math.radians(app_az)), math.cos(math.radians(app_az)) 
     df['Z_sh_base'] = z_chenal - S_s * (df['X']*ux_s + df['Y']*uy_s) 
 
-    bounds_stats = []
-
     for x, y, z_base, z_nat in zip(df['X'], df['Y'], df['Z_sh_base'], df['Z_Ext']):
         pt = Point(x, y)
         z_excav = z_nat
         
-        # Excavation Base (Chenal général plat / pente)
-        # z_excav = min(z_excav, z_base) # Dé-commenter si on drague toute la zone par défaut
-        
-        # Bassin & Évitage
         if bassin_poly:
             if bassin_poly.contains(pt): z_excav = min(z_excav, z_bassin)
             else: z_excav = min(z_excav, z_bassin + (bassin_poly.distance(pt) / slope_ratio))
@@ -477,7 +464,6 @@ if st.session_state['raw_df'] is not None:
             if dist_e <= evit_rad: z_excav = min(z_excav, z_evitage)
             else: z_excav = min(z_excav, z_evitage + ((dist_e - evit_rad) / slope_ratio))
             
-        # Remblais
         z_fill = z_excav
         
         if term_poly:
@@ -486,8 +472,7 @@ if st.session_state['raw_df'] is not None:
                 dist_term = term_poly.distance(pt)
                 is_behind_quay = False
                 if quai_line and quai_line.distance(pt) < dist_term and dist_term < 50: is_behind_quay = True
-                if not is_behind_quay:
-                    z_fill = max(z_fill, z_terreplein - (dist_term / slope_ratio))
+                if not is_behind_quay: z_fill = max(z_fill, z_terreplein - (dist_term / slope_ratio))
                     
         if digue_line:
             dist_digue = digue_line.distance(pt)
@@ -502,8 +487,7 @@ if st.session_state['raw_df'] is not None:
         mask_norec = (df['Z_Ext'] <= df['Z_FGL_Target']) & (df['Z_Ext'] <= 0)
         df['Z_FGL'] = df['Z_FGL_Target'].copy()
         df.loc[mask_norec, 'Z_FGL'] = df.loc[mask_norec, 'Z_Ext']
-    else:
-        df['Z_FGL'] = df['Z_FGL_Target']
+    else: df['Z_FGL'] = df['Z_FGL_Target']
 
     df['Z_Sub'] = df['Z_FGL'] - pavement_thick
     if not allow_reclam: df.loc[mask_norec, 'Z_Sub'] = df.loc[mask_norec, 'Z_Ext']
@@ -519,8 +503,8 @@ if st.session_state['raw_df'] is not None:
 
     vol_cut_terre = abs(df_p[is_land & is_cut]['Diff_Earth'].sum()) * (actual_res**2)
     vol_cut_mer = abs(df_p[is_sea & is_cut]['Diff_Earth'].sum()) * (actual_res**2)
-    
     vol_fill_terre = df_p[is_land & is_fill]['Diff_Earth'].sum() * (actual_res**2)
+    
     df_fill_sea = df_p[is_sea & is_fill]
     vol_fill_sousmer = (np.minimum(df_fill_sea['Z_Sub'], 0) - df_fill_sea['Z_Ext']).sum() * (actual_res**2)
     vol_fill_surmer = np.maximum(df_fill_sea['Z_Sub'], 0).sum() * (actual_res**2)
@@ -528,13 +512,10 @@ if st.session_state['raw_df'] is not None:
     tot_cut = vol_cut_terre + vol_cut_mer
     tot_fill = vol_fill_terre + vol_fill_sousmer + vol_fill_surmer
 
-    if quai_line: bounds_stats.append({'type': 'Quai', 'length': quai_line.length, 'max_h': z_terreplein - z_chenal})
-    if digue_line: bounds_stats.append({'type': 'Digue', 'length': digue_line.length, 'max_h': z_digue - z_chenal})
-
     # =========================================================================
     # --- RESULTATS & ONGLETS ---
     # =========================================================================
-    t_civ, t_hydro, t_topo = st.tabs(["🏗️ Volumes & Coupes", "🌊 Hydrologie & Météocéan", "🗺️ Plan d'Ensemble"])
+    t_civ, t_hydro, t_topo = st.tabs(["🏗️ Volumes & Coupes", "🌊 Hydrologie & Météocéan", "🗺️ Plan Topo & Contours"])
 
     with t_civ:
         c_v1, c_v2, c_v3 = st.columns(3)
@@ -563,7 +544,6 @@ if st.session_state['raw_df'] is not None:
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=[df_s['D'].min(), df_s['D'].max()], y=[0,0], mode='lines', name='Niveau 0 (Mer)', line=dict(color='cyan', dash='dash')))
             
-            # Area fills
             fig.add_trace(go.Scatter(x=df_s['D'], y=df_s['Z_FGL'], line=dict(width=0), showlegend=False))
             fig.add_trace(go.Scatter(x=df_s['D'], y=np.maximum(df_s['Z_FGL'], df_s['Z_Ext']), fill='tonexty', fillcolor='rgba(255,0,0,0.4)', name='Dragage/Déblai', line=dict(width=0)))
             
@@ -604,14 +584,14 @@ if st.session_state['raw_df'] is not None:
 
     with t_topo:
         st.subheader("Masterplan Topo & Contours")
-        vt1, vt2 = st.columns(2)
+        vt1, vt2, vt3 = st.columns(3)
         step_c = vt1.slider("Equidistance (m)", 0.5, 5.0, 1.0)
         opac = vt2.slider("Opacité Satellite", 0.0, 1.0, 0.6)
+        show_cotes = vt3.toggle("Afficher les Cotes (Z MSL)", value=True)
         
         m_plan = folium.Map(location=[c_lat, c_lon], zoom_start=16, tiles=None)
         folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', opacity=opac).add_to(m_plan)
         
-        # Trace du projet sur le plan final
         if shapes['terre_plein']: folium.Polygon(locations=[(p[1], p[0]) for p in shapes['terre_plein']], color='#00FF00', weight=4, fill=False).add_to(m_plan)
         if shapes['bassin']: folium.Polygon(locations=[(p[1], p[0]) for p in shapes['bassin']], color='#00FFFF', weight=3, fill=False, dash_array='5,5').add_to(m_plan)
         if shapes['quai']: folium.PolyLine(locations=[(p[1], p[0]) for p in shapes['quai']], color='#000000', weight=8).add_to(m_plan)
@@ -622,7 +602,6 @@ if st.session_state['raw_df'] is not None:
             triang = tri.Triangulation(df['Lon'], df['Lat'])
             levels = np.arange(math.floor(df['Z_FGL'].min()), math.ceil(df['Z_FGL'].max()) + step_c, step_c)
             if len(levels) > 1:
-                # Contours sur le projet fini (Z_FGL) !
                 contour = ax.tricontour(triang, df['Z_FGL'], levels=levels) 
                 cmp = cm.LinearColormap(['darkblue', 'blue', 'cyan', 'green', 'yellow', 'red'], vmin=df['Z_FGL'].min(), vmax=df['Z_FGL'].max())
                 m_plan.add_child(cmp)
@@ -638,6 +617,18 @@ if st.session_state['raw_df'] is not None:
             plt.close(fig)
         except: pass
         
+        if show_cotes:
+            res_5x = actual_res * 4 
+            df_topo = df.copy()  
+            df_topo['X_bin'] = (df_topo['X'] // res_5x) * res_5x 
+            df_topo['Y_bin'] = (df_topo['Y'] // res_5x) * res_5x 
+            df_sampled = df_topo.groupby(['X_bin', 'Y_bin']).first().reset_index() 
+
+            for _, r in df_sampled.iterrows(): 
+                html_txt = f"<div style='font-size: 10px; font-weight: bold; color: white; text-shadow: 1px 1px 2px black;'>{r['Z_FGL']:.1f}</div>" 
+                folium.Marker([r['Lat'], r['Lon']], icon=folium.DivIcon(html=html_txt)).add_to(m_plan) 
+                folium.CircleMarker([r['Lat'], r['Lon']], radius=1, color='white', fill=True).add_to(m_plan) 
+
         st_folium(m_plan, width=1200, height=600, key="final_topo")
         
     st.markdown("---")
